@@ -2,6 +2,8 @@
 
 Agent observability platform — visualizes OpenTelemetry traces from AI agent frameworks. See every LLM call, tool use, and workflow step your agent makes.
 
+![agentObserve Dashboard](docs/dashboard.png)
+
 Currently supports **LangChain / LangGraph** and **Anthropic SDK (Claude Agent SDK)**.
 
 ```
