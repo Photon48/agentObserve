@@ -1,0 +1,21 @@
+# Service management
+.pids/
+.logs/
+
+# Dependencies
+node_modules/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+uv.lock
+
+# Vite
+dist/
+
+# Telemetry data (generated at runtime)
+telemetry/
+
+# Environment
+.env

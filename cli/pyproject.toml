@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling", "hatch-autorun"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentobserve"
+version = "0.1.0"
+description = "Zero-config LLM observability"
+requires-python = ">=3.10"
+dependencies = [
+    "opentelemetry-api>=1.21.0",
+    "opentelemetry-sdk>=1.21.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.21.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["opentelemetry-instrumentation-anthropic>=0.50.0"]
+langchain = ["langsmith[otel]>=0.8.0"]
+openai = ["opentelemetry-instrumentation-openai>=0.50.0"]
+all = ["agentobserve[anthropic,langchain,openai]"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentobserve"]
+
+[tool.hatch.build.hooks.autorun]
+dependencies = ["hatch-autorun"]
+code = "import agentobserve._bootstrap"

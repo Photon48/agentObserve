@@ -1,0 +1,25 @@
+import { useState } from 'react';
+import { SessionList } from './components/SessionList.jsx';
+import { DungeonView } from './components/DungeonView.jsx';
+import './styles/dungeon.css';
+
+export default function App() {
+  const [view, setView] = useState('list');
+  const [sessionId, setSessionId] = useState(null);
+
+  function handleSelect(id) {
+    setSessionId(id);
+    setView('dungeon');
+  }
+
+  function handleExit() {
+    setView('list');
+    setSessionId(null);
+  }
+
+  if (view === 'dungeon' && sessionId) {
+    return <DungeonView sessionId={sessionId} onExit={handleExit} />;
+  }
+
+  return <SessionList onSelect={handleSelect} />;
+}

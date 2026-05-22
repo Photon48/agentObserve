@@ -1,0 +1,176 @@
+import json
+import os
+import time
+from pathlib import Path
+
+from fastapi import FastAPI, Request, Response
+from google.protobuf import json_format
+from opentelemetry.proto.collector.logs.v1 import logs_service_pb2
+from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2
+from opentelemetry.proto.collector.trace.v1 import trace_service_pb2
+from opentelemetry.proto.metrics.v1 import metrics_pb2
+
+app = FastAPI()
+
+TELEMETRY_DIR = Path(os.environ.get("TELEMETRY_DIR", str(Path(__file__).parent / "telemetry")))
+
+
+def _find_attr(attributes, *keys: str) -> str | None:
+    for attr in attributes:
+        if attr.key in keys:
+            return attr.value.string_value or None
+    return None
+
+
+def _resolve_session(proto_msg) -> str:
+    resources = (
+        getattr(proto_msg, "resource_spans", None)
+        or getattr(proto_msg, "resource_metrics", None)
+        or getattr(proto_msg, "resource_logs", None)
+    )
+    if not resources:
+        return "unknown"
+    first = resources[0]
+
+    # 1. Try resource-level session.id
+    resource = getattr(first, "resource", None)
+    if resource:
+        v = _find_attr(resource.attributes, "session.id")
+        if v:
+            return v
+
+    # 2. Try span/record attributes: session.id first, then langsmith.trace.session_name
+    for scope_group in (
+        getattr(first, "scope_spans", [])
+        or getattr(first, "scope_metrics", [])
+        or getattr(first, "scope_logs", [])
+    ):
+        records = (
+            getattr(scope_group, "spans", [])
+            or getattr(scope_group, "metrics", [])
+            or getattr(scope_group, "log_records", [])
+        )
+        if records:
+            v = _find_attr(
+                records[0].attributes,
+                "session.id",
+                "langsmith.trace.session_name",
+            )
+            if v:
+                return v
+            break
+
+    return "unknown"
+
+
+def _save(signal: str, proto_msg, raw: bytes, session: str) -> None:
+    out_dir = TELEMETRY_DIR / session
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time() * 1000)
+    base = out_dir / f"{signal}_{ts}"
+    base.with_suffix(".pb").write_bytes(raw)
+    base.with_suffix(".json").write_text(
+        json.dumps(json_format.MessageToDict(proto_msg), indent=2)
+    )
+
+
+def _attr_int(attributes, key: str) -> int | None:
+    for attr in attributes:
+        if attr.key == key:
+            v = attr.value
+            if v.HasField("int_value"):
+                return v.int_value
+            if v.HasField("double_value"):
+                return int(v.double_value)
+    return None
+
+
+def _derive_and_save_metrics(trace_msg, session: str) -> None:
+    """Extract gen_ai.usage.* from span attributes and write a derived metrics file."""
+    input_tokens = 0
+    output_tokens = 0
+    found = False
+
+    for rs in trace_msg.resource_spans:
+        for ss in rs.scope_spans:
+            for span in ss.spans:
+                it = _attr_int(span.attributes, "gen_ai.usage.input_tokens")
+                ot = _attr_int(span.attributes, "gen_ai.usage.output_tokens")
+                if it is not None:
+                    input_tokens += it
+                    found = True
+                if ot is not None:
+                    output_tokens += ot
+                    found = True
+
+    if not found:
+        return
+
+    ts_ns = int(time.time() * 1e9)
+
+    def _make_sum(name: str, value: int) -> metrics_pb2.Metric:
+        return metrics_pb2.Metric(
+            name=name,
+            sum=metrics_pb2.Sum(
+                data_points=[
+                    metrics_pb2.NumberDataPoint(
+                        as_int=value,
+                        start_time_unix_nano=ts_ns,
+                        time_unix_nano=ts_ns,
+                    )
+                ],
+                # 1 = AGGREGATION_TEMPORALITY_DELTA
+                aggregation_temporality=1,
+                is_monotonic=True,
+            ),
+        )
+
+    metrics_req = metrics_service_pb2.ExportMetricsServiceRequest(
+        resource_metrics=[
+            metrics_pb2.ResourceMetrics(
+                scope_metrics=[
+                    metrics_pb2.ScopeMetrics(
+                        metrics=[
+                            _make_sum("gen_ai.usage.input_tokens", input_tokens),
+                            _make_sum("gen_ai.usage.output_tokens", output_tokens),
+                        ]
+                    )
+                ]
+            )
+        ]
+    )
+    _save("metrics", metrics_req, metrics_req.SerializeToString(), session)
+
+
+@app.post("/v1/traces")
+async def receive_traces(request: Request) -> Response:
+    raw = await request.body()
+    msg = trace_service_pb2.ExportTraceServiceRequest()
+    msg.ParseFromString(raw)
+    session = _resolve_session(msg)
+    _save("traces", msg, raw, session)
+    _derive_and_save_metrics(msg, session)
+    resp = trace_service_pb2.ExportTraceServiceResponse()
+    return Response(content=resp.SerializeToString(), media_type="application/x-protobuf")
+
+
+@app.post("/v1/metrics")
+async def receive_metrics(request: Request) -> Response:
+    raw = await request.body()
+    msg = metrics_service_pb2.ExportMetricsServiceRequest()
+    msg.ParseFromString(raw)
+    session = _resolve_session(msg)
+    _save("metrics", msg, raw, session)
+    resp = metrics_service_pb2.ExportMetricsServiceResponse()
+    return Response(content=resp.SerializeToString(), media_type="application/x-protobuf")
+
+
+@app.post("/v1/logs")
+async def receive_logs(request: Request) -> Response:
+    raw = await request.body()
+    msg = logs_service_pb2.ExportLogsServiceRequest()
+    msg.ParseFromString(raw)
+    session = _resolve_session(msg)
+    _save("logs", msg, raw, session)
+    resp = logs_service_pb2.ExportLogsServiceResponse()
+    return Response(content=resp.SerializeToString(), media_type="application/x-protobuf")
