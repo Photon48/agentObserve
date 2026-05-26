@@ -117,6 +117,32 @@ from langgraph.graph import StateGraph, START, END
 # ... their agent code ...
 ```
 
+**Grouping LLM calls under one trace per request.** Only needed when the
+agent makes LangChain `.invoke()` calls *outside* the LangGraph context
+(e.g. guardrails, NER, tool planning, RAG routing, post-processing). Each
+such top-level `.invoke()` starts its own OTEL root trace because there is
+no parent span in the OTEL context-var at the moment it runs — and the
+dashboard will render only the LangGraph subtree, dropping everything else.
+
+Fix: place a `@traceable` decorator from `langsmith` at the request
+boundary. With `LANGSMITH_OTEL_ONLY=true` (already required above), the
+decorator emits a standard OTEL span via the TracerProvider that
+agentobserve installs. Every nested `.invoke()` attaches as a child via
+OTEL context propagation, collapsing all spans into a single trace.
+
+```python
+from langsmith import traceable
+
+@traceable(run_type="chain", name="ai_request")
+async def handle_request(...):
+    # existing code — guardrails, LangGraph agent, NER, tools — all attach
+    # as descendants of this span automatically.
+    ...
+```
+
+No other code changes required. Works for any HTTP framework (FastAPI,
+Flask, Django, etc.) — no inbound OTEL instrumentor needed.
+
 ### Framework: Anthropic SDK (Claude Agent SDK)
 
 **Install into the user's project venv:**
@@ -220,7 +246,7 @@ OTEL Receiver (otel_receiver.py)
 | `cli/pyproject.toml` | Package definition with `[anthropic]`, `[langchain]`, `[openai]` extras |
 | `server/loader.js` | Reads telemetry dirs, groups spans/logs by session ID |
 | `server/adapters/index.js` | Adapter registry — detection + routing |
-| `server/adapters/shared.js` | Shared utils: `nanoToMs`, `nanoToDate`, `sortByStart`, `buildWorkflowNode` |
+| `server/adapters/shared.js` | Shared utils: `nanoToMs`, `nanoToDate`, `sortByStart`, `buildWorkflowNode`, `getDescendants`, `detectWorkflowNodeKind` |
 | `server/adapters/anthropic.js` | Anthropic/Claude Code adapter |
 | `server/adapters/langchain.js` | LangChain/LangGraph adapter |
 | `server/parser.js` | Re-exports `buildSessions()` from adapters |
@@ -285,3 +311,81 @@ Detection priority in `adapters/index.js`: anthropic -> langchain (first `canHan
 3. Import shared utils from `./shared.js` and `getAttr` from `../loader.js`
 4. Register in `server/adapters/index.js`
 5. Return a session matching the canonical schema
+
+### Agent detection — do NOT hardcode span names
+
+Use the shared `detectWorkflowNodeKind` helper. It returns `'AGENT'` or
+`'PIPELINE_MEMBER'` for a workflow child. Rules, in priority order:
+
+1. **Strong signal:** any descendant matches `isAgentSpan` → AGENT.
+2. **Iterative reasoning fallback:** ≥2 LLM descendants → AGENT.
+3. **Tool dispatch fallback:** any tool invocation → AGENT.
+4. Else → PIPELINE_MEMBER.
+
+The helper is framework-agnostic; your adapter supplies up to three
+predicates that say what these spans look like in your telemetry:
+
+```js
+import { detectWorkflowNodeKind } from './shared.js';
+import { getAttr } from '../loader.js';
+
+// Prefer OTEL gen_ai semantic conventions when the framework follows them.
+const isLLM  = (s) => getAttr(s.attributes, 'gen_ai.operation.name') === 'chat';
+const isTool = (s) => getAttr(s.attributes, 'gen_ai.operation.name') === 'execute_tool';
+
+// Optional. Strongly recommended — catches one-shot agent runs (single LLM,
+// no tools) that the structural fallbacks miss. Use the framework's own
+// agent-boundary marker, or the OTEL standard `invoke_agent`.
+const isAgentSpan = (s) =>
+  getAttr(s.attributes, 'gen_ai.operation.name') === 'invoke_agent';
+
+const kind = detectWorkflowNodeKind(child.spanId, childrenOf, isLLM, isTool, isAgentSpan);
+```
+
+If a framework emits non-OTEL attributes (e.g. LangSmith's
+`langsmith.span.kind === 'llm'` or `langsmith.metadata.langgraph_node`),
+OR them into the predicate inside the adapter — never push framework-
+specific branches into `shared.js`. `server/adapters/langchain.js` is the
+working reference: its `isAgentSpan` checks for `langsmith.metadata.langgraph_node`
+because LangGraph stamps every span inside a graph node with it.
+
+### Structured-output LLM calls — watch for empty `text`
+
+If a new adapter reports an LLM span where the user sees a JSON object in
+the source telemetry but agentObserve renders the output as empty, the
+cause is almost always **schema-bound tool use**.
+
+LangChain (`.with_structured_output(...)`, `.bind_tools(..., tool_choice="any")`,
+JSON-mode bindings), the OpenAI function-calling API, Anthropic's
+tool-use, and Bedrock Converse with toolConfig all share one mechanism:
+the LLM emits the structured payload as the *arguments* of a synthetic
+tool call. The provider returns an assistant message whose `text` is empty
+and whose `content` array contains a `tool_use` block carrying the
+structured payload as `input`.
+
+Captured shape (LangChain serialization):
+```
+{ generations: [[{
+    text: "",                                       ← EMPTY
+    message: { kwargs: { content: [
+      { type: "tool_use", name: "<Schema>",
+        input: { …the answer… }, id: "tooluse_…" }
+    ] } }
+}]] }
+```
+Other frameworks differ in field names but follow the same pattern: prefer
+text → empty → walk the assistant message's content blocks for tool_use
+inputs and stringify them.
+
+The working reference is `extractCompletionText` in
+`server/adapters/langchain.js` (block comment above it details the
+serialization shape). When adding a new adapter, port the same idea:
+
+1. Read the LLM's text first.
+2. If empty, scan the assistant message's content blocks for `text` and
+   `tool_use` entries.
+3. Concatenate `text` blocks; pretty-print `tool_use.input` (or
+   equivalent — `function_call.arguments` for legacy OpenAI, etc.).
+
+Symptoms that point here: guardrails / plain chat models render
+correctly; classifiers / planners / extractors return empty.

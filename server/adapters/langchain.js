@@ -1,5 +1,13 @@
 import { getAttr } from '../loader.js';
-import { nanoToMs, nanoToDate, sortByStart, inferToolSchemas } from './shared.js';
+import {
+  nanoToMs,
+  nanoToDate,
+  sortByStart,
+  inferToolSchemas,
+  getDescendants,
+  detectWorkflowNodeKind,
+  extractTextContent,
+} from './shared.js';
 
 export const FRAMEWORK = 'langchain';
 
@@ -9,19 +17,19 @@ export function canHandle(rawData) {
 
 // ── Span traversal helpers ──────────────────────────────────────────────────
 
-function getDescendants(spanId, childrenOf) {
-  const result = [];
-  for (const child of childrenOf[spanId] || []) {
-    result.push(child);
-    result.push(...getDescendants(child.spanId, childrenOf));
-  }
-  return result;
-}
-
 function findDescendantByName(spanId, name, childrenOf) {
   for (const child of childrenOf[spanId] || []) {
     if (child.name === name) return child;
     const deeper = findDescendantByName(child.spanId, name, childrenOf);
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+function findDescendantBy(spanId, childrenOf, predicate) {
+  for (const child of childrenOf[spanId] || []) {
+    if (predicate(child)) return child;
+    const deeper = findDescendantBy(child.spanId, childrenOf, predicate);
     if (deeper) return deeper;
   }
   return null;
@@ -36,37 +44,153 @@ function findDescendantByName(spanId, name, childrenOf) {
 // `content` is a string for text-only responses, or an array of
 // { type: 'text'|'tool_use', ... } blocks when the LLM invokes tools.
 
+// Recognized keys that name a user query. Tried in priority order so that
+// when `@traceable` (or any handler-decorator) captures multiple kwargs, the
+// user query wins over auxiliary inputs like session_id or model_override.
+const USER_QUERY_KEYS = [
+  'user_query', 'user_message', 'query', 'prompt', 'message',
+  'input', 'text', 'content',
+];
+
+// Skip stringified Python/JS object reprs like
+// "<starlette.requests.Request object at 0xffff…>". These show up when a
+// caller passes a non-JSON-serializable arg to `@traceable`.
+function isReprString(s) {
+  return typeof s === 'string' && /^<.+>$/.test(s.trim());
+}
+
+function findUserQueryInObject(obj) {
+  if (obj === null || obj === undefined) return '';
+  if (typeof obj === 'string') return isReprString(obj) ? '' : obj;
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const t = findUserQueryInObject(item);
+      if (t) return t;
+    }
+    return '';
+  }
+  if (typeof obj !== 'object') return '';
+  // 1. Priority key match (case-insensitive) at this level
+  for (const wanted of USER_QUERY_KEYS) {
+    for (const key of Object.keys(obj)) {
+      if (key.toLowerCase() === wanted) {
+        const t = findUserQueryInObject(obj[key]);
+        if (t) return t;
+      }
+    }
+  }
+  // 2. Recurse into any container
+  for (const v of Object.values(obj)) {
+    if (v && typeof v === 'object') {
+      const t = findUserQueryInObject(v);
+      if (t) return t;
+    }
+  }
+  return '';
+}
+
 function extractPromptText(promptStr) {
   if (!promptStr) return '';
   try {
     const obj = JSON.parse(promptStr);
-    if (typeof obj.user_message === 'string') return obj.user_message;
-    if (typeof obj === 'string') return obj;
-    if (obj.messages) {
-      // messages is typically [[msg, msg, ...]]  (array of arrays)
+
+    // LangChain chat-format: `{messages: [[{kwargs:{content}}, …], …]}`.
+    // Walk in reverse to prefer the latest user turn over earlier system msgs.
+    if (obj && typeof obj === 'object' && obj.messages) {
       const flat = Array.isArray(obj.messages[0]) ? obj.messages.flat() : obj.messages;
-      for (const m of flat) {
-        const content = m.kwargs?.content ?? m.content;
-        if (typeof content === 'string') return content;
+      for (let i = flat.length - 1; i >= 0; i--) {
+        const m = flat[i];
+        const role = m?.kwargs?.type || m?.type || m?.role || '';
+        const content = m?.kwargs?.content ?? m?.content;
+        if (role === 'human' || role === 'user') {
+          if (typeof content === 'string' && !isReprString(content)) return content;
+        }
       }
     }
-    return Object.values(obj).filter((v) => typeof v === 'string').join('\n');
+
+    // Generic case: walk priority keys, recursively. Handles arbitrary
+    // handler signatures like `(kickoff_request, request)` where the user
+    // query lives at `kickoff_request.user_query` and the noise (Request
+    // repr) gets filtered automatically.
+    const t = findUserQueryInObject(obj);
+    if (t) return t;
+
+    // Fallback: any non-repr string in the object.
+    if (typeof obj === 'string') return isReprString(obj) ? '' : obj;
+    return Object.values(obj || {})
+      .filter((v) => typeof v === 'string' && !isReprString(v))
+      .join('\n');
   } catch {
-    return promptStr;
+    return isReprString(promptStr) ? '' : promptStr;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPORTANT — Structured-output LLM calls (read before changing this function)
+//
+// LangChain's `.with_structured_output(PydanticModel)`, `.bind_tools(...,
+// tool_choice="any")`, JSON-mode bindings, and other schema-forcing helpers
+// all use the *same trick* under the hood: they ask the underlying LLM
+// provider (Anthropic, Bedrock, OpenAI) for a tool call whose ARGUMENTS are
+// the structured payload. The LLM's text response is therefore empty —
+// the answer lives in a tool_use content block on the assistant message.
+//
+// Captured serialization for these calls (langsmith[otel] format):
+//   { generations: [[{
+//       text: "",                                  ← EMPTY, easy to miss
+//       message: { kwargs: { content: [
+//         { type: "tool_use",
+//           name: "<SchemaName>",
+//           input: { …the structured fields… },    ← the real answer
+//           id: "tooluse_…" }
+//       ] } }
+//   }]] }
+//
+// Plain-text LLM calls (no schema binding) have `text` populated normally.
+// So we read `g.text` first; only when it's empty do we mine the content
+// blocks for `tool_use` payloads.
+//
+// If a future adapter (OpenAI, Anthropic SDK, Vertex, …) reports "the LLM
+// output is empty but the user can see a JSON object in the source span":
+// check whether that framework uses provider tool-use to enforce a schema.
+// The fix shape is the same: prefer plain text; on empty text, walk the
+// assistant message's content for tool_use blocks and stringify the inputs.
+// ─────────────────────────────────────────────────────────────────────────────
 
 function extractCompletionText(completionStr) {
   if (!completionStr) return '';
   try {
     const obj = JSON.parse(completionStr);
     if (obj.generations) {
-      return obj.generations.flat().map((g) => g.text || '').join('');
+      const out = obj.generations.flat().map((g) => {
+        if (g.text) return g.text;
+        // Structured-output path — see the block comment above this function.
+        const content = g.message?.kwargs?.content;
+        if (Array.isArray(content)) {
+          const parts = [];
+          for (const block of content) {
+            if (block?.type === 'text' && block.text) parts.push(block.text);
+            else if (block?.type === 'tool_use' && block.input) {
+              parts.push(JSON.stringify(block.input, null, 2));
+            }
+          }
+          return parts.join('\n');
+        }
+        return '';
+      }).join('');
+      if (out) return out;
     }
     for (const key of ['output', 'final_response', 'agent_response', 'result']) {
-      if (obj[key]) {
-        if (typeof obj[key] === 'string') return obj[key];
-        if (typeof obj[key]?.content === 'string') return obj[key].content;
+      if (obj[key] === undefined) continue;
+      const v = obj[key];
+      if (typeof v === 'string') return v;
+      // Try string-or-content-block on the value or its `.content`.
+      const text = extractTextContent(v) || extractTextContent(v?.content);
+      if (text) return text;
+      // Structured-output binders (Pydantic, JSON schema, …) emit a plain
+      // object — pretty-print so users can see what the chain produced.
+      if (typeof v === 'object' && v !== null) {
+        return JSON.stringify(v, null, 2);
       }
     }
     return Object.values(obj).filter((v) => typeof v === 'string').join('\n\n');
@@ -224,7 +348,7 @@ export function buildSession(sessionId, raw) {
   }
 
   const rootSpans = spans
-    .filter((s) => s.name === 'LangGraph' && (!s.parentSpanId || !spanById[s.parentSpanId]))
+    .filter((s) => !s.parentSpanId || !spanById[s.parentSpanId])
     .sort(sortByStart);
 
   if (rootSpans.length === 0) return null;
@@ -466,14 +590,29 @@ function buildTurn(idx, rootSpan, childrenOf, spanById) {
     const childStart = BigInt(child.startTimeUnixNano);
     const childDur = nanoToMs(child.endTimeUnixNano) - nanoToMs(child.startTimeUnixNano);
 
-    const childLlm = findDescendantByName(child.spanId, 'ChatAnthropic', childrenOf);
+    const isLLM = (s) =>
+      getAttr(s.attributes, 'langsmith.span.kind') === 'llm' ||
+      getAttr(s.attributes, 'gen_ai.operation.name') === 'chat';
+    const isTool = (s) =>
+      getAttr(s.attributes, 'gen_ai.operation.name') === 'execute_tool';
+    // Strong agent marker: LangGraph stamps every span inside a graph node
+    // with `langsmith.metadata.langgraph_node`. Also honor the OTEL
+    // standard `invoke_agent` for any framework that emits it.
+    const isAgentSpan = (s) =>
+      !!getAttr(s.attributes, 'langsmith.metadata.langgraph_node') ||
+      getAttr(s.attributes, 'gen_ai.operation.name') === 'invoke_agent';
+    const kind = detectWorkflowNodeKind(child.spanId, childrenOf, isLLM, isTool, isAgentSpan);
+
+    // Pull model + token metadata from the LLM span. Prefer self when the
+    // workflow child IS the LLM (direct ChatBedrockConverse / ChatAnthropic /
+    // etc.); otherwise find the first LLM descendant (RunnableSequence,
+    // middleware wrappers, …).
+    const childLlm = isLLM(child)
+      ? child
+      : findDescendantBy(child.spanId, childrenOf, isLLM);
     const model = childLlm ? (getAttr(childLlm.attributes, 'gen_ai.request.model') || '') : '';
     const inTok = childLlm ? Number(getAttr(childLlm.attributes, 'gen_ai.usage.input_tokens') || 0) : 0;
     const outTok = childLlm ? Number(getAttr(childLlm.attributes, 'gen_ai.usage.output_tokens') || 0) : 0;
-
-    const hasNestedAgent = findDescendantByName(child.spanId, 'agent', childrenOf)
-                        || findDescendantByName(child.spanId, 'LangGraph', childrenOf);
-    const kind = hasNestedAgent ? 'AGENT' : 'PIPELINE_MEMBER';
 
     const inputText = (childLlm && kind !== 'AGENT')
       ? extractLlmSpanInputText(childLlm)

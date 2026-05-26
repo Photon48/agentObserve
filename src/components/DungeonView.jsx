@@ -120,24 +120,85 @@ function TurnIOPanel({ turn }) {
 
 function ToolDirectorySidebar({ tools, emptyState, nodeName }) {
   const [expanded, setExpanded] = useState(null);
+  // Expand state for nested schema rows — keyed by dot-path so each level
+  // is independent. Generic over any JSON Schema shape.
+  const [openPaths, setOpenPaths] = useState(() => new Set());
 
-  function renderSchema(schema) {
-    if (!schema?.properties) return null;
-    const req = new Set(schema.required || []);
-    return Object.entries(schema.properties).map(([name, prop]) => (
-      <div key={name} className="tool-schema__row">
-        <div className="tool-schema__row-top">
+  function togglePath(p) {
+    setOpenPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(p)) next.delete(p);
+      else next.add(p);
+      return next;
+    });
+  }
+
+  function typeLabel(prop) {
+    if (!prop) return '?';
+    if (prop.type === 'array' && prop.items?.type) return `array<${prop.items.type}>`;
+    return prop.type || '?';
+  }
+
+  function hasChildren(prop) {
+    if (!prop) return false;
+    if (prop.type === 'object' && prop.properties) return true;
+    if (prop.type === 'array' && prop.items?.properties) return true;
+    return false;
+  }
+
+  function renderRow(name, prop, required, path) {
+    const expandable = hasChildren(prop);
+    const open = openPaths.has(path);
+    const descPath = `${path}:desc`;
+    const descOpen = openPaths.has(descPath);
+    return (
+      <div key={path} className="tool-schema__row">
+        <div
+          className={`tool-schema__row-top${expandable ? ' tool-schema__row-top--clickable' : ''}`}
+          onClick={expandable ? () => togglePath(path) : undefined}
+        >
+          {expandable && (
+            <span className="tool-schema__chevron">{open ? '▾' : '▸'}</span>
+          )}
           <span className="tool-schema__param">{name}</span>
-          <span className="tool-schema__type">{prop.type || '?'}</span>
-          <span className={req.has(name) ? 'tool-schema__req' : 'tool-schema__opt'}>
-            {req.has(name) ? 'req' : 'opt'}
+          <span className="tool-schema__type">{typeLabel(prop)}</span>
+          <span className={required ? 'tool-schema__req' : 'tool-schema__opt'}>
+            {required ? 'req' : 'opt'}
           </span>
         </div>
         {prop.description && (
-          <div className="tool-schema__desc">{prop.description}</div>
+          <>
+            <div
+              className="tool-schema__desc-toggle"
+              onClick={(e) => { e.stopPropagation(); togglePath(descPath); }}
+            >
+              {descOpen ? '▾ description' : '▸ description'}
+            </div>
+            {descOpen && (
+              <div className="tool-schema__desc">{prop.description}</div>
+            )}
+          </>
+        )}
+        {expandable && open && (
+          <div className="tool-schema__nested">
+            {prop.type === 'object' && renderProperties(prop, path)}
+            {prop.type === 'array' && renderProperties(prop.items, `${path}[]`)}
+          </div>
         )}
       </div>
-    ));
+    );
+  }
+
+  function renderProperties(schema, path) {
+    if (!schema?.properties) return null;
+    const req = new Set(schema.required || []);
+    return Object.entries(schema.properties).map(([name, prop]) =>
+      renderRow(name, prop, req.has(name), `${path}.${name}`)
+    );
+  }
+
+  function renderSchema(schema) {
+    return renderProperties(schema, '');
   }
 
   return (
@@ -163,9 +224,23 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName }) {
                 </div>
                 {expanded === i && (
                   <div className="tool-schema">
-                    {t.description && (
-                      <div className="tool-schema__desc-header">{t.description}</div>
-                    )}
+                    {t.description && (() => {
+                      const toolDescPath = `__tool_desc:${t.name}`;
+                      const toolDescOpen = openPaths.has(toolDescPath);
+                      return (
+                        <>
+                          <div
+                            className="tool-schema__desc-toggle"
+                            onClick={() => togglePath(toolDescPath)}
+                          >
+                            {toolDescOpen ? '▾ description' : '▸ description'}
+                          </div>
+                          {toolDescOpen && (
+                            <div className="tool-schema__desc-header">{t.description}</div>
+                          )}
+                        </>
+                      );
+                    })()}
                     {renderSchema(t.inputSchema)}
                     {t.inputSchema && Object.keys(t.inputSchema.properties || {}).length === 0 && (
                       <div className="tool-schema__empty">no parameters</div>
@@ -278,6 +353,7 @@ export function DungeonView({ sessionId, onExit }) {
         sessionId={sessionId}
         turnIdx={turnIdx}
         turnCount={turns.length}
+        turn={currentTurn}
       />
       <div className="step-panel">
         {!detailMode

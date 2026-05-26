@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { truncateId } from '../utils/format.js';
+import { truncateId, formatTokens, formatDuration } from '../utils/format.js';
 
-export function HUD({ sessionId, turnIdx, turnCount }) {
+export function HUD({ sessionId, turnIdx, turnCount, turn }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -28,6 +28,20 @@ export function HUD({ sessionId, turnIdx, turnCount }) {
           {turnCount > 0 ? `${turnIdx + 1}/${turnCount}` : '—'}
         </span>
       </div>
+      {turn && (
+        <>
+          <div className="hud__cell">
+            <span className="hud__label">TOKENS</span>
+            <span className="hud__value">
+              ↓{formatTokens(turn.totalInputTokens)} ↑{formatTokens(turn.totalOutputTokens)}
+            </span>
+          </div>
+          <div className="hud__cell">
+            <span className="hud__label">DURATION</span>
+            <span className="hud__value">{formatDuration(turn.durationMs)}</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }

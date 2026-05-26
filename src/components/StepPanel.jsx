@@ -1,24 +1,36 @@
 import { useState } from 'react';
 import { formatCost, formatTokens, formatDuration } from '../utils/format.js';
 
-const MAX_PROMPT_LINES = 50;
-const MAX_JSON_LINES = 20;
-const MAX_RESULT_LINES = 15;
-
-function truncateLines(text, max) {
-  if (!text) return { text: '', truncated: false };
-  const lines = text.split('\n');
-  if (lines.length <= max) return { text, truncated: false };
-  return { text: lines.slice(0, max).join('\n'), truncated: true };
+// Generic preview-with-toggle for any long text block. Renders the first
+// `previewLines` and offers a "show N more / collapse" toggle. Never silently
+// truncates. Used everywhere text might be long — prompts, thoughts, replies,
+// tool inputs, tool results.
+function CollapsibleText({ text, previewLines = 6, emptyLabel = '(empty)' }) {
+  const [expanded, setExpanded] = useState(false);
+  const lines = (text || '').split('\n');
+  const needsCollapse = lines.length > previewLines;
+  const displayed = (!needsCollapse || expanded)
+    ? (text || '')
+    : lines.slice(0, previewLines).join('\n');
+  return (
+    <>
+      <div className="conv-block__body">
+        {displayed || <span className="text-empty">{emptyLabel}</span>}
+      </div>
+      {needsCollapse && (
+        <button className="conv-block__toggle" onClick={() => setExpanded((e) => !e)}>
+          {expanded ? '▾ collapse' : `▸ show ${lines.length - previewLines} more lines`}
+        </button>
+      )}
+    </>
+  );
 }
 
 function PromptStep({ step }) {
-  const { text, truncated } = truncateLines(step.text, MAX_PROMPT_LINES);
   return (
     <div className="step-prompt">
       <div className="step-title">▶ USER PROMPT</div>
-      <div className="step-text">{text || <span className="text-empty">(empty)</span>}</div>
-      {truncated && <div className="step-trunc">[... truncated]</div>}
+      <CollapsibleText text={step.text} previewLines={10} />
     </div>
   );
 }
@@ -26,27 +38,19 @@ function PromptStep({ step }) {
 // ── Conversation blocks ──────────────────────────────────────────────────────
 
 function ThoughtBlock({ block }) {
-  const { text, truncated } = truncateLines(block.text, 30);
   return (
     <div className="conv-block conv-block--thought">
       <div className="conv-block__header">◈ THINKING</div>
-      <div className="conv-block__body">
-        {text || <span className="text-empty">(empty)</span>}
-        {truncated && <div className="text-truncated">[... truncated]</div>}
-      </div>
+      <CollapsibleText text={block.text} previewLines={8} />
     </div>
   );
 }
 
 function TextBlock({ block }) {
-  const { text, truncated } = truncateLines(block.text, 50);
   return (
     <div className="conv-block conv-block--text">
       <div className="conv-block__header">◆ CLAUDE</div>
-      <div className="conv-block__body">
-        {text || <span className="text-empty">(empty)</span>}
-        {truncated && <div className="text-truncated">[... truncated]</div>}
-      </div>
+      <CollapsibleText text={block.text} previewLines={10} />
     </div>
   );
 }
@@ -56,17 +60,13 @@ function ToolUseBlock({ block, timing }) {
   try {
     jsonFormatted = JSON.stringify(block.input, null, 2);
   } catch {}
-  const { text: jsonText, truncated } = truncateLines(jsonFormatted, MAX_JSON_LINES);
   return (
     <div className="conv-block conv-block--tool-use">
       <div className="conv-block__header">
         ⚙ TOOL_USE  {block.name}
         {timing != null && <span className="conv-timing">{formatDuration(timing)}</span>}
       </div>
-      <div className="conv-block__body">
-        {jsonText}
-        {truncated && <div className="text-truncated">[... truncated]</div>}
-      </div>
+      <CollapsibleText text={jsonFormatted} previewLines={8} />
     </div>
   );
 }
@@ -86,35 +86,19 @@ function LLMTimingRow({ node }) {
 }
 
 function ToolResultBlock({ block }) {
-  const PREVIEW_LINES = 5;
-  const lines = (block.text || '').split('\n');
-  const needsCollapse = lines.length > PREVIEW_LINES;
-  const [expanded, setExpanded] = useState(false);
-  const displayed = (!needsCollapse || expanded) ? block.text : lines.slice(0, PREVIEW_LINES).join('\n');
   return (
     <div className="conv-block conv-block--tool-result">
       <div className="conv-block__header">↩ RESULT  {block.name}</div>
-      <div className="conv-block__body">
-        {displayed || <span className="text-empty">(empty)</span>}
-      </div>
-      {needsCollapse && (
-        <button className="conv-block__toggle" onClick={() => setExpanded((e) => !e)}>
-          {expanded ? '▾ collapse' : `▸ show ${lines.length - PREVIEW_LINES} more lines`}
-        </button>
-      )}
+      <CollapsibleText text={block.text} previewLines={6} />
     </div>
   );
 }
 
 function AgentResponseBlock({ block }) {
-  const { text, truncated } = truncateLines(block.text, 50);
   return (
     <div className="conv-block conv-block--agent-response">
       <div className="conv-block__header">★ RESPONSE</div>
-      <div className="conv-block__body">
-        {text || <span className="text-empty">(empty)</span>}
-        {truncated && <div className="text-truncated">[... truncated]</div>}
-      </div>
+      <CollapsibleText text={block.text} previewLines={10} />
     </div>
   );
 }
@@ -253,7 +237,6 @@ function ToolNode({ node }) {
 
   let jsonFormatted = node.toolInput || '';
   try { jsonFormatted = JSON.stringify(JSON.parse(node.toolInput), null, 2); } catch {}
-  const { text: jsonText, truncated } = truncateLines(jsonFormatted, MAX_JSON_LINES);
 
   return (
     <div className="cascade-node cascade-node--tool">
@@ -263,8 +246,10 @@ function ToolNode({ node }) {
           {(node.decision || 'unknown').toUpperCase()}{node.source ? ` [${node.source}]` : ''}
         </span>
       </div>
-      {jsonText && (
-        <div className="cascade-node__input">{jsonText}{truncated ? '\n[... truncated]' : ''}</div>
+      {jsonFormatted && (
+        <div className="cascade-node__input">
+          <CollapsibleText text={jsonFormatted} previewLines={8} />
+        </div>
       )}
       {(node.durationMs > 0 || node.toolResultSizeBytes > 0) && (
         <div className="cascade-node__meta">

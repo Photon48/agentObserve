@@ -27,7 +27,12 @@ def setup():
     trace.set_tracer_provider(provider)
 
     # 2. Load all installed instrumentors
-    _load_instrumentors(provider)
+    # Skip in LangSmith OTEL-only mode: LangSmith emits its own LLM spans
+    # through the TracerProvider, and the auto-loaded HTTP client
+    # instrumentors (urllib3/requests/httpx) inject traceparent headers
+    # into outbound calls — which breaks AWS SigV4 signing for Bedrock.
+    if not os.environ.get("LANGSMITH_OTEL_ONLY"):
+        _load_instrumentors(provider)
 
     # 3. Create root session span + propagate TRACEPARENT for subprocesses
     # Skip root span for LangChain — LangSmith manages its own hierarchy

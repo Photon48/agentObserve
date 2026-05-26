@@ -103,6 +103,84 @@ export function buildWorkflowNode(span, kind, agentStepData) {
   };
 }
 
+// ── Content extraction ──────────────────────────────────────────────────────
+//
+// Handles both plain strings AND the Anthropic-style content-block array
+// ([{type:'text', text:'...'}, …]) — a cross-vendor convention used by
+// Anthropic SDK, MCP, OpenAI structured content, and many tool integrations.
+// Framework-agnostic; adapters call this whenever they pull text from
+// `gen_ai.completion` / `gen_ai.prompt` / tool outputs.
+
+export function extractTextContent(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .filter((c) => c && c.type === 'text')
+      .map((c) => c.text || '')
+      .join('');
+  }
+  return '';
+}
+
+// ── Span traversal ──────────────────────────────────────────────────────────
+
+export function getDescendants(spanId, childrenOf) {
+  const result = [];
+  for (const child of childrenOf[spanId] || []) {
+    result.push(child);
+    result.push(...getDescendants(child.spanId, childrenOf));
+  }
+  return result;
+}
+
+// ── Framework-agnostic workflow-node classification ─────────────────────────
+//
+// AGENT iff any of:
+//   1. The subtree contains an explicit agent-boundary span (strong signal —
+//      adapter decides what that looks like via `isAgentSpan`).
+//   2. ≥2 LLM descendants (iterative reasoning).
+//   3. Any tool invocation (LLM dispatching to tools).
+//
+// Rules 2-3 are structural fallbacks that catch agentic behavior without an
+// explicit marker. Rule 1 catches the case where an agent ran one-shot
+// (single LLM, no tools) — common when the agent answers without iterating.
+//
+// Pattern: predicate injection. This function knows the algorithm; the
+// adapter knows its framework's attributes. DO NOT add framework-specific
+// branches (e.g. `if (kind === 'langsmith') …`) here — that breaks at N
+// frameworks. New adapters define their own predicates and call in.
+//
+// Example for a new adapter (e.g. server/adapters/openai.js):
+//
+//   import { detectWorkflowNodeKind } from './shared.js';
+//   import { getAttr } from '../loader.js';
+//
+//   const isLLM  = (s) => getAttr(s.attributes, 'gen_ai.operation.name') === 'chat';
+//   const isTool = (s) => getAttr(s.attributes, 'gen_ai.operation.name') === 'execute_tool';
+//   const isAgentSpan = (s) => getAttr(s.attributes, 'gen_ai.operation.name') === 'invoke_agent';
+//   const kind = detectWorkflowNodeKind(child.spanId, childrenOf, isLLM, isTool, isAgentSpan);
+//
+// `isAgentSpan` is optional — defaults to never-match. See
+// server/adapters/langchain.js for the working reference (it uses the
+// LangSmith-specific `langsmith.metadata.langgraph_node` marker).
+
+export function detectWorkflowNodeKind(
+  spanId,
+  childrenOf,
+  isLLM,
+  isTool,
+  isAgentSpan = () => false,
+) {
+  let llmCount = 0;
+  let hasTool = false;
+  for (const d of getDescendants(spanId, childrenOf)) {
+    if (isAgentSpan(d)) return 'AGENT'; // strong signal — short-circuit
+    if (isLLM(d)) llmCount++;
+    if (isTool(d)) { hasTool = true; }
+  }
+  return (llmCount >= 2 || hasTool) ? 'AGENT' : 'PIPELINE_MEMBER';
+}
+
 // ── Infer tool schemas from observed inputs ──────────────────────────────────
 //
 // When tool schemas aren't available in the telemetry (no request bodies for
@@ -118,17 +196,39 @@ function inferType(value) {
   return 'string';
 }
 
-function buildSchemaFromInputs(inputs) {
+function inferProperty(value) {
+  const t = inferType(value);
+  if (t === 'object') {
+    return { type: 'object', properties: inferObjectProperties([value]) };
+  }
+  if (t === 'array' && Array.isArray(value) && value.length > 0) {
+    const objectItems = value.filter(
+      (x) => x && typeof x === 'object' && !Array.isArray(x),
+    );
+    if (objectItems.length > 0) {
+      return {
+        type: 'array',
+        items: { type: 'object', properties: inferObjectProperties(objectItems) },
+      };
+    }
+    return { type: 'array', items: { type: inferType(value[0]) } };
+  }
+  return { type: t };
+}
+
+function inferObjectProperties(objects) {
   const properties = {};
-  for (const input of inputs) {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) continue;
-    for (const [key, value] of Object.entries(input)) {
-      if (!properties[key]) {
-        properties[key] = { type: inferType(value) };
-      }
+  for (const obj of objects) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue;
+    for (const [key, value] of Object.entries(obj)) {
+      if (!properties[key]) properties[key] = inferProperty(value);
     }
   }
-  return { type: 'object', properties };
+  return properties;
+}
+
+function buildSchemaFromInputs(inputs) {
+  return { type: 'object', properties: inferObjectProperties(inputs) };
 }
 
 export function inferToolSchemas(session) {
