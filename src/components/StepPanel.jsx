@@ -114,7 +114,7 @@ function ConvBlock({ block, timing }) {
   }
 }
 
-function ConversationView({ blocks, toolTimingMap = {}, llmTimings = [] }) {
+function ConversationView({ blocks, toolTimingMap = {}, llmTimings = [], subAgentByToolUseId = {}, onZoomIntoSubAgent }) {
   if (!blocks?.length) return null;
 
   // Inject LLMTimingRow before each new generation group (THOUGHT/TEXT run)
@@ -140,6 +140,20 @@ function ConversationView({ blocks, toolTimingMap = {}, llmTimings = [] }) {
       {renderList.map((item) => {
         if (item._llmTiming) {
           return <LLMTimingRow key={item.key} node={item.node} />;
+        }
+        // If this TOOL_USE block corresponds to a promoted sub-agent,
+        // render the zoomable SubAgentNode card inline in place of the
+        // generic TOOL_USE block. This preserves chronological position
+        // within the conversation flow.
+        if (item.type === 'TOOL_USE' && item.id && subAgentByToolUseId[item.id]) {
+          const agentNode = subAgentByToolUseId[item.id];
+          return (
+            <SubAgentNode
+              key={`agent-${item._idx}`}
+              node={agentNode}
+              onZoom={onZoomIntoSubAgent}
+            />
+          );
         }
         const timing = item.type === 'TOOL_USE' ? toolTimingMap[item.id] : undefined;
         return <ConvBlock key={item._idx} block={item} timing={timing} />;
@@ -339,8 +353,6 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
   const nodes = step.nodes || [];
   const upstreamPre  = step.upstreamPre  || [];
   const upstreamPost = step.upstreamPost || [];
-  const hasNestedAgents = nodes.some((n) => n.kind === 'AGENT');
-
   // Build timing maps from agentNodes
   const toolTimingMap = {};
   const llmTimings = [];
@@ -375,30 +387,77 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
     return items;
   }
 
+  // Render rule:
+  //  1. If we have conversation-style content (either pre-built
+  //     capturedBlocks or LLM_CALL.blocks on individual nodes), render
+  //     ConversationView with sub-agents spliced INLINE at the matching
+  //     TOOL_USE block (preserving chronological position in the flow).
+  //  2. Any AGENT-kind node whose toolUseId doesn't match a block is an
+  //     orphan — show those in a small fallback appendix below.
+  //  3. Only fall back to the cascade view when there is no conversational
+  //     content at all.
+  const subAgentNodes = nodes.filter((n) => n.kind === 'AGENT');
+  const subAgentByToolUseId = {};
+  for (const a of subAgentNodes) {
+    if (a.toolUseId) subAgentByToolUseId[a.toolUseId] = a;
+  }
+
+  function renderOrphanSubAgents(blocks) {
+    if (subAgentNodes.length === 0) return null;
+    const matchedIds = new Set();
+    for (const b of blocks || []) {
+      if (b.type === 'TOOL_USE' && b.id && subAgentByToolUseId[b.id]) matchedIds.add(b.id);
+    }
+    const orphans = subAgentNodes.filter((a) => !a.toolUseId || !matchedIds.has(a.toolUseId));
+    if (orphans.length === 0) return null;
+    return (
+      <div className="agent-cascade agent-cascade--subagents">
+        <div className="agent-cascade__subhead">SUB-AGENTS (no inline match)</div>
+        {orphans.map((sub, i) => (
+          <div key={`orphan-${i}`}>
+            <SubAgentNode node={sub} onZoom={onZoomIntoSubAgent} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   const agentContent = (() => {
     if (step.capturedBlocks?.length > 0) {
       return (
         <>
-          <ConversationView blocks={step.capturedBlocks} toolTimingMap={toolTimingMap} llmTimings={llmTimings} />
-          {hasNestedAgents && (
-            <div className="agent-cascade agent-cascade--subagents">
-              <div className="agent-cascade__subhead">SUB-AGENTS</div>
-              {nodes.filter((n) => n.kind === 'AGENT').map((sub, i) => (
-                <div key={`sub-${i}`}>
-                  <SubAgentNode node={sub} onZoom={onZoomIntoSubAgent} />
-                </div>
-              ))}
-            </div>
-          )}
+          <ConversationView
+            blocks={step.capturedBlocks}
+            toolTimingMap={toolTimingMap}
+            llmTimings={llmTimings}
+            subAgentByToolUseId={subAgentByToolUseId}
+            onZoomIntoSubAgent={onZoomIntoSubAgent}
+          />
+          {renderOrphanSubAgents(step.capturedBlocks)}
         </>
       );
     }
     if (nodes.length === 0) {
       return <div className="text-dim">(no agent activity)</div>;
     }
-    const hasBlocks = nodes.some((n) => n.kind === 'LLM_CALL' && n.blocks?.length > 0);
-    if (hasBlocks && !hasNestedAgents) {
-      return <ConversationView blocks={nodes.flatMap((n) => n.blocks || [])} toolTimingMap={toolTimingMap} llmTimings={llmTimings} />;
+    // Compose conversation blocks from non-AGENT nodes — AGENT nodes are
+    // spliced into the stream at their tool_use_id match.
+    const inlineBlockNodes = nodes.filter((n) => n.kind !== 'AGENT');
+    const flatBlocks = inlineBlockNodes.flatMap((n) => n.blocks || []);
+    const hasBlocks = flatBlocks.length > 0;
+    if (hasBlocks) {
+      return (
+        <>
+          <ConversationView
+            blocks={flatBlocks}
+            toolTimingMap={toolTimingMap}
+            llmTimings={llmTimings}
+            subAgentByToolUseId={subAgentByToolUseId}
+            onZoomIntoSubAgent={onZoomIntoSubAgent}
+          />
+          {renderOrphanSubAgents(flatBlocks)}
+        </>
+      );
     }
     const cascadeItems = buildCascadeItems(nodes);
     return (

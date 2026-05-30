@@ -734,6 +734,10 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
         kind: 'AGENT',
         agentName,
         agentType,
+        // Preserve toolUseId so the frontend can splice this AGENT into
+        // the parent's conversation view at the matching TOOL_USE block,
+        // instead of rendering it in a separate appendix.
+        toolUseId: node.toolUseId || '',
         source: node.source || '',
         nodes: subNodes,
         durationMs: Number((BigInt(endNanoSpan) - BigInt(startNanoSpan)) / 1000000n),
