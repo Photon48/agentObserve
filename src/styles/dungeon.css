@@ -484,6 +484,33 @@ body::before {
 .cascade-node__header { display: flex; justify-content: space-between; gap: 16px; }
 .cascade-node__meta   { color: var(--fg-dim); font-size: 11px; margin-top: 3px; }
 .cascade-node__input  { color: var(--fg-amber); font-size: 11px; margin-top: 4px; white-space: pre; overflow: hidden; }
+.cascade-node__output { color: var(--fg-dim); font-size: 11px; margin-top: 4px; white-space: pre-wrap; overflow: hidden; border-top: 1px solid var(--border); padding-top: 4px; }
+
+/* ── Parallel Tool Group ───────────────────────────────────── */
+.cascade-parallel-group { border: 1px dashed var(--fg-cyan); border-radius: 4px; padding: 6px; }
+.cascade-parallel-group__header { color: var(--fg-cyan); font-size: 11px; margin-bottom: 6px; }
+.cascade-parallel-group__lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0.5rem; }
+
+/* ── Subagent nesting ──────────────────────────────────────── */
+.cascade-subagent-toggle {
+  background: none; border: none; color: var(--fg-cyan);
+  cursor: pointer; font-size: 11px; margin-top: 6px; padding: 2px 0;
+  font-family: var(--font-mono);
+}
+.cascade-subagent-toggle:hover { color: var(--fg-muted); }
+
+.cascade-subagent-body {
+  margin-top: 6px; padding: 6px 0 6px 12px;
+  border-left: 2px solid var(--fg-cyan);
+}
+
+.cascade-node__error {
+  color: var(--fg-red); font-size: 11px; margin-top: 3px;
+}
+
+.cascade-node__blocked {
+  color: var(--fg-amber); font-size: 11px; margin-top: 3px;
+}
 
 /* ── Tool Sidebar ───────────────────────────────────────────── */
 

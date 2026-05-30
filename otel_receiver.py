@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -165,12 +166,55 @@ async def receive_metrics(request: Request) -> Response:
     return Response(content=resp.SerializeToString(), media_type="application/x-protobuf")
 
 
+_BODY_REF_LOG_BODIES = {
+    "claude_code.api_request_body",
+    "claude_code.api_response_body",
+}
+
+
+def _relocate_body_refs(logs_msg, session: str) -> bytes | None:
+    """Move CLI-written raw API body files into telemetry/<session>/api_bodies/
+    and rewrite each log record's body_ref attribute to the new path.
+
+    Returns re-serialized protobuf bytes if any record was rewritten, else None.
+    """
+    target_dir = TELEMETRY_DIR / session / "api_bodies"
+    mutated = False
+
+    for rl in logs_msg.resource_logs:
+        for sl in rl.scope_logs:
+            for rec in sl.log_records:
+                if rec.body.string_value not in _BODY_REF_LOG_BODIES:
+                    continue
+                for attr in rec.attributes:
+                    if attr.key != "body_ref":
+                        continue
+                    src = attr.value.string_value
+                    if not src:
+                        break
+                    src_path = Path(src)
+                    if not src_path.is_file():
+                        break
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    dest = target_dir / src_path.name
+                    try:
+                        shutil.move(str(src_path), str(dest))
+                    except OSError:
+                        break
+                    attr.value.string_value = str(dest)
+                    mutated = True
+                    break
+
+    return logs_msg.SerializeToString() if mutated else None
+
+
 @app.post("/v1/logs")
 async def receive_logs(request: Request) -> Response:
     raw = await request.body()
     msg = logs_service_pb2.ExportLogsServiceRequest()
     msg.ParseFromString(raw)
     session = _resolve_session(msg)
-    _save("logs", msg, raw, session)
+    rewritten = _relocate_body_refs(msg, session)
+    _save("logs", msg, rewritten or raw, session)
     resp = logs_service_pb2.ExportLogsServiceResponse()
     return Response(content=resp.SerializeToString(), media_type="application/x-protobuf")

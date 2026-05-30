@@ -151,7 +151,7 @@ export function buildSession(sessionId, raw, orphanSpans = []) {
     }
   }
 
-  // Fallback: collect unique tool names from TOOL_USE blocks when no request bodies have tools
+  // Fallback: collect unique tool names from TOOL_USE blocks and TOOL nodes
   if (availableTools.length === 0) {
     for (const turn of turns) {
       const agentStep = turn.steps?.find((s) => s.type === 'AGENT');
@@ -159,6 +159,19 @@ export function buildSession(sessionId, raw, orphanSpans = []) {
         if (block.type === 'TOOL_USE' && !toolNamesSeen.has(block.name)) {
           toolNamesSeen.add(block.name);
           availableTools.push({ name: block.name, description: '', inputSchema: null });
+        }
+      }
+      for (const node of agentStep?.nodes || []) {
+        if (node.kind === 'LLM_CALL') {
+          for (const block of node.blocks || []) {
+            if (block.type === 'TOOL_USE' && !toolNamesSeen.has(block.name)) {
+              toolNamesSeen.add(block.name);
+              availableTools.push({ name: block.name, description: '', inputSchema: null });
+            }
+          }
+        } else if (node.kind === 'TOOL' && node.toolName && !toolNamesSeen.has(node.toolName)) {
+          toolNamesSeen.add(node.toolName);
+          availableTools.push({ name: node.toolName, description: '', inputSchema: null });
         }
       }
     }

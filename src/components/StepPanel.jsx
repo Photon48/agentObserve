@@ -231,6 +231,8 @@ function HookNode({ node }) {
 }
 
 function ToolNode({ node }) {
+  const [subExpanded, setSubExpanded] = useState(false);
+  const hasSubagent = node.subagentNodes?.length > 0;
   const decClass =
     node.decision === 'accept' ? 'tool-decision--accept' :
     node.decision === 'block' ? 'tool-decision--block' : 'tool-decision--unknown';
@@ -251,12 +253,56 @@ function ToolNode({ node }) {
           <CollapsibleText text={jsonFormatted} previewLines={8} />
         </div>
       )}
+      {node.toolOutput && (
+        <div className="cascade-node__output">
+          <CollapsibleText text={node.toolOutput} previewLines={6} emptyLabel="" />
+        </div>
+      )}
       {(node.durationMs > 0 || node.toolResultSizeBytes > 0) && (
         <div className="cascade-node__meta">
           {node.durationMs > 0 ? `dur: ${formatDuration(node.durationMs)}  ` : ''}
           {node.toolResultSizeBytes > 0 ? `result: ${node.toolResultSizeBytes} bytes` : ''}
         </div>
       )}
+      {node.error && (
+        <div className="cascade-node__error">{'✗'} {node.error}</div>
+      )}
+      {node.blockedDurationMs > 0 && (
+        <div className="cascade-node__blocked">
+          {'⏳'} waited {formatDuration(node.blockedDurationMs)} for user
+          {node.blockedDecision && ` → ${node.blockedDecision}`}
+        </div>
+      )}
+      {hasSubagent && (
+        <>
+          <button className="cascade-subagent-toggle" onClick={() => setSubExpanded(e => !e)}>
+            {subExpanded ? '▾' : '▸'} subagent ({node.subagentNodes.length} steps)
+          </button>
+          {subExpanded && (
+            <div className="cascade-subagent-body">
+              {node.subagentNodes.map((sub, i) => (
+                <div key={i}>
+                  <CascadeNode node={sub} />
+                  {i < node.subagentNodes.length - 1 && (
+                    <div className="cascade-connector">{'│'}<br />{'▼'}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ParallelToolGroup({ nodes }) {
+  return (
+    <div className="cascade-parallel-group">
+      <div className="cascade-parallel-group__header">&#x21F6; PARALLEL ({nodes.length} tools)</div>
+      <div className="cascade-parallel-group__lanes">
+        {nodes.map((n, i) => <ToolNode key={i} node={n} />)}
+      </div>
     </div>
   );
 }
@@ -295,12 +341,31 @@ export function AgentStep({ step }) {
     if (hasBlocks) {
       return <ConversationView blocks={nodes.flatMap((n) => n.blocks || [])} toolTimingMap={toolTimingMap} llmTimings={llmTimings} />;
     }
+    // Group consecutive TOOL nodes with matching parallelGroup
+    const cascadeItems = [];
+    for (let i = 0; i < nodes.length; ) {
+      const node = nodes[i];
+      if (node.parallelGroup) {
+        const groupNodes = [];
+        const gid = node.parallelGroup;
+        while (i < nodes.length && nodes[i].parallelGroup === gid) {
+          groupNodes.push(nodes[i]);
+          i++;
+        }
+        cascadeItems.push({ type: 'parallel', nodes: groupNodes, key: `pg-${gid}` });
+      } else {
+        cascadeItems.push({ type: 'single', node, key: `n-${i}` });
+        i++;
+      }
+    }
     return (
       <div className="agent-cascade">
-        {nodes.map((node, i) => (
-          <div key={i}>
-            <CascadeNode node={node} />
-            {i < nodes.length - 1 && <div className="cascade-connector">{'│'}<br />{'▼'}</div>}
+        {cascadeItems.map((item, i) => (
+          <div key={item.key}>
+            {item.type === 'parallel'
+              ? <ParallelToolGroup nodes={item.nodes} />
+              : <CascadeNode node={item.node} />}
+            {i < cascadeItems.length - 1 && <div className="cascade-connector">{'│'}<br />{'▼'}</div>}
           </div>
         ))}
       </div>
