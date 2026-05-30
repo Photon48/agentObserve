@@ -303,6 +303,7 @@ totalInputTokens, totalOutputTokens, steps[], workflowGraph
 - **LLM_CALL**: `kind, model, inputTokens, outputTokens, cacheReadTokens (0), cacheCreationTokens (0), costUsd (0), durationMs, ttftMs (0), stopReason (''), requestId (''), blocks ([]), graphNode ('')`
 - **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), durationMs, success (true)`
 - **HOOK**: `kind, hookName, hookEvent, durationMs, success, numHooks, numSuccess`
+- **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime` — recursive: `nodes` may itself contain AGENT-kind entries. Use the shared `classifyAgentNodeKind` / `buildNestedAgentStep` helpers in `shared.js` to detect and emit these uniformly at any depth.
 
 ### Block (discriminated on `type`)
 - **THOUGHT**: `{ type, text }`

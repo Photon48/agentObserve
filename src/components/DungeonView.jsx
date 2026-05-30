@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { HUD } from './HUD.jsx';
 import { WorkflowGraph } from './WorkflowGraph.jsx';
-import { NodeDetailView } from './NodeDetailView.jsx';
+import { StackedDetail } from './StackedDetail.jsx';
 import { TimelineBar } from './TimelineBar.jsx';
 import { WorkflowMinimap } from './WorkflowMinimap.jsx';
 import { useKeyNav } from '../hooks/useKeyNav.js';
@@ -257,13 +257,42 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName }) {
   );
 }
 
+// Navigation stack for the detail/zoom views. Each push adds one level of
+// depth (workflow node → agent → sub-agent → ...). Length 0 = workflow
+// graph is visible. Length N = the Nth entry is the top panel; entries 0
+// to N-1 render behind it with depth chrome (see StackedDetail).
+//
+// Entry shapes:
+//   { kind: 'detail', workflowNode }      — first push from workflow graph
+//   { kind: 'subagent', agentStep, label } — each zoom into an AGENT-kind
+//                                            AgentNode inside the cascade
+function makeDetailEntry(workflowNode) {
+  return { kind: 'detail', workflowNode, label: detailLabelFromWorkflowNode(workflowNode) };
+}
+function makeSubAgentEntry(agentNode) {
+  return {
+    kind: 'subagent',
+    agentStep: { type: 'AGENT', nodes: agentNode.nodes || [], capturedBlocks: null, userPrompt: '' },
+    label: agentNode.agentName ? `SUB-AGENT · ${agentNode.agentName}` : 'SUB-AGENT',
+  };
+}
+function detailLabelFromWorkflowNode(node) {
+  if (!node) return '';
+  if (node.kind === 'AGENT') return 'AGENT DETAIL';
+  if (node.kind === 'UPSTREAM_LLM') return 'UPSTREAM LLM';
+  if (node.kind === 'DOWNSTREAM_LLM') return 'DOWNSTREAM LLM';
+  return (node.label || node.kind || '').toUpperCase();
+}
+
 export function DungeonView({ sessionId, onExit }) {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [turnIdx, setTurnIdx] = useState(0);
   const [graphState, setGraphState] = useState({ groupIdx: 0, nodeIdx: 0 });
-  const [detailMode, setDetailMode] = useState(false);
+  // Stack of detail/sub-agent views layered over the workflow graph.
+  // Empty = workflow visible. Each entry is one zoom level.
+  const [detailStack, setDetailStack] = useState([]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -278,7 +307,7 @@ export function DungeonView({ sessionId, onExit }) {
         setSession(data);
         setTurnIdx(0);
         setGraphState({ groupIdx: 0, nodeIdx: 0 });
-        setDetailMode(false);
+        setDetailStack([]);
         setLoading(false);
       })
       .catch((e) => {
@@ -293,19 +322,33 @@ export function DungeonView({ sessionId, onExit }) {
   const selectedGroup = graph?.groups[graphState.groupIdx] || null;
   const selectedNode = selectedGroup?.nodes[graphState.nodeIdx] || null;
 
+  const detailMode = detailStack.length > 0;
+
+  const pushDetail = useCallback((entry) => {
+    setDetailStack((prev) => [...prev, entry]);
+  }, []);
+  const popDetail = useCallback(() => {
+    setDetailStack((prev) => prev.slice(0, -1));
+  }, []);
+  const onZoomIntoSubAgent = useCallback((agentNode) => {
+    pushDetail(makeSubAgentEntry(agentNode));
+  }, [pushDetail]);
+
   const onTurnChange = useCallback((delta) => {
     const newTurnIdx = turnIdx + delta;
     if (newTurnIdx < 0 || newTurnIdx >= turns.length) return;
     const newGraph = turns[newTurnIdx]?.workflowGraph || null;
     setTurnIdx(newTurnIdx);
     setGraphState(resolveGraphState(selectedNode, graphState.groupIdx, newGraph));
-    // detailMode intentionally NOT reset — stay in whatever mode you were in
+    // Turn change collapses the detail stack — different turn, different scope
+    setDetailStack([]);
   }, [turnIdx, turns, selectedNode, graphState.groupIdx]);
 
   const onTurnSelect = useCallback((idx) => {
     if (idx < 0 || idx >= turns.length) return;
     setTurnIdx(idx);
     setGraphState(resolveGraphState(selectedNode, graphState.groupIdx, turns[idx]?.workflowGraph));
+    setDetailStack([]);
   }, [turns, selectedNode, graphState.groupIdx]);
 
   useKeyNav({
@@ -315,8 +358,10 @@ export function DungeonView({ sessionId, onExit }) {
     setGraphState,
     onTurnChange,
     detailMode,
-    onEnterDetail: () => setDetailMode(true),
-    onExitDetail: () => setDetailMode(false),
+    onEnterDetail: () => {
+      if (selectedNode) pushDetail(makeDetailEntry(selectedNode));
+    },
+    onExitDetail: popDetail,
     onExitSession: onExit,
   });
 
@@ -364,7 +409,8 @@ export function DungeonView({ sessionId, onExit }) {
                 nodeIdx={graphState.nodeIdx}
                 onNodeClick={(gIdx, nIdx) => {
                   setGraphState({ groupIdx: gIdx, nodeIdx: nIdx });
-                  setDetailMode(true);
+                  const node = graph?.groups[gIdx]?.nodes[nIdx];
+                  if (node) pushDetail(makeDetailEntry(node));
                 }}
               />
               <TurnIOPanel turn={currentTurn} />
@@ -376,9 +422,11 @@ export function DungeonView({ sessionId, onExit }) {
               />
             </div>
           : <div className="step-panel__detail-wrap">
-              <div className="step-panel__detail-scroll">
-                <NodeDetailView node={selectedNode} />
-              </div>
+              <StackedDetail
+                stack={detailStack}
+                onZoomIntoSubAgent={onZoomIntoSubAgent}
+                onPop={popDetail}
+              />
               <WorkflowMinimap
                 graph={graph}
                 groupIdx={graphState.groupIdx}

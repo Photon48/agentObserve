@@ -1,5 +1,5 @@
 import { getAttr } from '../loader.js';
-import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas } from './shared.js';
+import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendants } from './shared.js';
 
 export const FRAMEWORK = 'anthropic';
 
@@ -614,6 +614,134 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
       if (capturedBlocks[i].type === 'TOOL_USE' || capturedBlocks[i].type === 'TOOL_RESULT') break;
     }
   }
+
+  // Promote Agent-tool invocations to canonical AGENT-kind AgentNodes.
+  //
+  // Detection: a TOOL node whose `toolName === 'Agent'` corresponds to a
+  // `claude_code.tool` span (with `tool_name=Agent`) under the turn's
+  // interaction span. The sub-agent's LLM and nested tool calls appear as
+  // descendant spans (`claude_code.llm_request`, `claude_code.tool`) of
+  // that Agent tool span. We pull the matched top-level AgentNodes into
+  // the new AGENT node's `nodes` array.
+  //
+  // Correlation: SDK `claude_code.tool` spans do NOT carry a `tool_use_id`
+  // attribute — only the logs do. We instead match the Nth Agent-named
+  // tool span (in temporal order) to the Nth Agent-named TOOL AgentNode.
+  // Both lists are temporally ordered, so positional matching is reliable
+  // for a single turn.
+  //
+  // Mirrors the recursive `promoteSubAgents` pass in claude_code_cli.js.
+  const agentToolSpansForTurn = getDescendants(interactionSpan.spanId, childrenOf)
+    .filter((s) => s.name === 'claude_code.tool' && getAttr(s.attributes, 'tool_name') === 'Agent')
+    .sort((a, b) => {
+      const aN = BigInt(a.startTimeUnixNano);
+      const bN = BigInt(b.startTimeUnixNano);
+      return aN < bN ? -1 : aN > bN ? 1 : 0;
+    });
+
+  (function promoteSubAgentsSDK(nodes, toolSpansToConsume) {
+    let toolSpanIdx = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (node.kind !== 'TOOL' || node.toolName !== 'Agent') continue;
+      const toolSpan = toolSpansToConsume[toolSpanIdx++];
+      if (!toolSpan) continue;
+
+      // Descendant request_ids identify which LLM_CALL nodes belong to the
+      // sub-agent. (For nested Agent tools, those descendants will include
+      // further `claude_code.tool` spans — those become sub-sub-agent
+      // candidates and are passed to the recursive call below.)
+      const subLlmReqIds = new Set();
+      const nestedAgentToolSpans = [];
+      for (const d of getDescendants(toolSpan.spanId, childrenOf)) {
+        if (d.name === 'claude_code.llm_request') {
+          const reqId = getAttr(d.attributes, 'request_id');
+          if (reqId) subLlmReqIds.add(reqId);
+        } else if (d.name === 'claude_code.tool' && getAttr(d.attributes, 'tool_name') === 'Agent') {
+          nestedAgentToolSpans.push(d);
+        }
+      }
+      // Tool descendants that aren't Agent tools — the sub-agent's
+      // ordinary tool calls. Match by start-time order against TOOL nodes
+      // in the sub-agent's window.
+      const subOrdinaryToolSpans = getDescendants(toolSpan.spanId, childrenOf)
+        .filter((d) => d.name === 'claude_code.tool' && getAttr(d.attributes, 'tool_name') !== 'Agent');
+
+      if (subLlmReqIds.size === 0 && nestedAgentToolSpans.length === 0 && subOrdinaryToolSpans.length === 0) continue;
+
+      // Match the Agent's tool span time window — anything from the same
+      // turn whose timestamp falls inside is a candidate for sub-agent.
+      const winStart = BigInt(toolSpan.startTimeUnixNano);
+      const winEnd = BigInt(toolSpan.endTimeUnixNano);
+
+      // Build a quick lookup: tool spans by tool_name in order, for
+      // matching ordinary sub-tool TOOL nodes.
+      let subOrdinaryIdx = 0;
+      const subOrdinaryByName = {};
+      for (const s of subOrdinaryToolSpans.sort((a, b) => {
+        const aN = BigInt(a.startTimeUnixNano);
+        const bN = BigInt(b.startTimeUnixNano);
+        return aN < bN ? -1 : aN > bN ? 1 : 0;
+      })) {
+        const tn = getAttr(s.attributes, 'tool_name') || '';
+        if (!subOrdinaryByName[tn]) subOrdinaryByName[tn] = [];
+        subOrdinaryByName[tn].push(s);
+      }
+      const subOrdinaryRemaining = JSON.parse(JSON.stringify(
+        Object.fromEntries(Object.entries(subOrdinaryByName).map(([k, v]) => [k, v.length])),
+      ));
+
+      const subIndices = [];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const c = nodes[j];
+        if (c.kind === 'LLM_CALL' && c.requestId && subLlmReqIds.has(c.requestId)) {
+          subIndices.push(j);
+        } else if (c.kind === 'TOOL') {
+          // Ordinary sub-agent tool — match by tool_name + count remaining
+          const tn = c.toolName || '';
+          if (subOrdinaryRemaining[tn] > 0) {
+            subOrdinaryRemaining[tn] -= 1;
+            subIndices.push(j);
+          }
+        }
+      }
+      if (subIndices.length === 0) continue;
+
+      const subNodes = subIndices.map((j) => nodes[j]);
+      for (const j of subIndices.reverse()) nodes.splice(j, 1);
+
+      // Recurse so Task-within-Task is also promoted, passing in the
+      // sub-agent's own nested Agent tool spans.
+      promoteSubAgentsSDK(subNodes, nestedAgentToolSpans);
+
+      // Extract agent metadata: prefer subagent_type, fall back to
+      // description (truncated), then the generic "Agent" label.
+      let agentName = 'Agent';
+      let agentType = 'subagent';
+      try {
+        const parsed = node.toolInput ? JSON.parse(node.toolInput) : {};
+        if (parsed.subagent_type) {
+          agentName = parsed.subagent_type;
+        } else if (parsed.description) {
+          agentName = String(parsed.description).slice(0, 60);
+        }
+      } catch {}
+
+      const startNanoSpan = toolSpan.startTimeUnixNano;
+      const endNanoSpan = toolSpan.endTimeUnixNano;
+
+      nodes[i] = {
+        kind: 'AGENT',
+        agentName,
+        agentType,
+        source: node.source || '',
+        nodes: subNodes,
+        durationMs: Number((BigInt(endNanoSpan) - BigInt(startNanoSpan)) / 1000000n),
+        startTime: nanoToDate(startNanoSpan).toISOString(),
+        endTime: nanoToDate(endNanoSpan).toISOString(),
+      };
+    }
+  })(agentNodes, agentToolSpansForTurn);
 
   // AGENT step (collapsed cascade of all LLM/TOOL/HOOK nodes)
   steps.push({ type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre, upstreamPost, userPrompt });

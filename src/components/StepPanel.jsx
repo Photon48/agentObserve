@@ -231,8 +231,6 @@ function HookNode({ node }) {
 }
 
 function ToolNode({ node }) {
-  const [subExpanded, setSubExpanded] = useState(false);
-  const hasSubagent = node.subagentNodes?.length > 0;
   const decClass =
     node.decision === 'accept' ? 'tool-decision--accept' :
     node.decision === 'block' ? 'tool-decision--block' : 'tool-decision--unknown';
@@ -273,26 +271,41 @@ function ToolNode({ node }) {
           {node.blockedDecision && ` → ${node.blockedDecision}`}
         </div>
       )}
-      {hasSubagent && (
-        <>
-          <button className="cascade-subagent-toggle" onClick={() => setSubExpanded(e => !e)}>
-            {subExpanded ? '▾' : '▸'} subagent ({node.subagentNodes.length} steps)
-          </button>
-          {subExpanded && (
-            <div className="cascade-subagent-body">
-              {node.subagentNodes.map((sub, i) => (
-                <div key={i}>
-                  <CascadeNode node={sub} />
-                  {i < node.subagentNodes.length - 1 && (
-                    <div className="cascade-connector">{'│'}<br />{'▼'}</div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
     </div>
+  );
+}
+
+// AGENT-kind AgentNode: a sub-agent that the user can zoom into. Renders as
+// a clickable card with the agent star icon, agent name, and a summary of
+// what's inside (child count, duration). Clicking pushes a new agent view
+// onto the navigation stack (see DungeonView.viewStack).
+function SubAgentNode({ node, onZoom }) {
+  const childCount = Array.isArray(node.nodes) ? node.nodes.length : 0;
+  const llmCount = childCount > 0 ? node.nodes.filter((n) => n.kind === 'LLM_CALL').length : 0;
+  const toolCount = childCount > 0 ? node.nodes.filter((n) => n.kind === 'TOOL').length : 0;
+  const nestedAgents = childCount > 0 ? node.nodes.filter((n) => n.kind === 'AGENT').length : 0;
+
+  return (
+    <button
+      type="button"
+      className="cascade-node cascade-node--agent"
+      onClick={() => onZoom?.(node)}
+    >
+      <div className="cascade-node__header">
+        <span>
+          <span style={{ color: 'var(--fg-amber)' }}>★ AGENT</span>{'  '}
+          {node.agentName || 'subagent'}
+        </span>
+        <span className="cascade-agent__zoom-hint">zoom in ▸</span>
+      </div>
+      <div className="cascade-agent__summary">
+        <span>{childCount} step{childCount === 1 ? '' : 's'}</span>
+        {llmCount > 0 && <span>{llmCount} llm</span>}
+        {toolCount > 0 && <span>{toolCount} tool</span>}
+        {nestedAgents > 0 && <span>{nestedAgents} sub-agent</span>}
+        {node.durationMs > 0 && <span>{formatDuration(node.durationMs)}</span>}
+      </div>
+    </button>
   );
 }
 
@@ -307,17 +320,26 @@ function ParallelToolGroup({ nodes }) {
   );
 }
 
-function CascadeNode({ node }) {
+function CascadeNode({ node, onZoomIntoSubAgent }) {
   if (node.kind === 'LLM_CALL') return <LLMNode node={node} />;
   if (node.kind === 'TOOL') return <ToolNode node={node} />;
   if (node.kind === 'HOOK') return <HookNode node={node} />;
+  if (node.kind === 'AGENT') return <SubAgentNode node={node} onZoom={onZoomIntoSubAgent} />;
   return null;
 }
 
-export function AgentStep({ step }) {
+// When AgentStep is rendered for a sub-agent zoom level, conversation-block
+// view doesn't apply (blocks belong to the top-level AGENT's flat block list,
+// not nested sub-agents). The cascade is the right view for nested levels.
+// When the top-level agent step still has captured blocks, we keep the
+// conversation view — but inside it, any AGENT-kind AgentNode would not be
+// visible (blocks are only LLM/tool content). So AGENT nodes are presented
+// through the cascade fallback path below.
+export function AgentStep({ step, onZoomIntoSubAgent }) {
   const nodes = step.nodes || [];
   const upstreamPre  = step.upstreamPre  || [];
   const upstreamPost = step.upstreamPost || [];
+  const hasNestedAgents = nodes.some((n) => n.kind === 'AGENT');
 
   // Build timing maps from agentNodes
   const toolTimingMap = {};
@@ -330,41 +352,62 @@ export function AgentStep({ step }) {
     }
   }
 
+  // Group consecutive TOOL nodes with matching parallelGroup — produces
+  // cascade-renderable items. Used by the cascade path AND as a sub-agent
+  // accessory list when the conversation view is otherwise active.
+  function buildCascadeItems(srcNodes) {
+    const items = [];
+    for (let i = 0; i < srcNodes.length; ) {
+      const node = srcNodes[i];
+      if (node.parallelGroup) {
+        const groupNodes = [];
+        const gid = node.parallelGroup;
+        while (i < srcNodes.length && srcNodes[i].parallelGroup === gid) {
+          groupNodes.push(srcNodes[i]);
+          i++;
+        }
+        items.push({ type: 'parallel', nodes: groupNodes, key: `pg-${gid}` });
+      } else {
+        items.push({ type: 'single', node, key: `n-${i}` });
+        i++;
+      }
+    }
+    return items;
+  }
+
   const agentContent = (() => {
     if (step.capturedBlocks?.length > 0) {
-      return <ConversationView blocks={step.capturedBlocks} toolTimingMap={toolTimingMap} llmTimings={llmTimings} />;
+      return (
+        <>
+          <ConversationView blocks={step.capturedBlocks} toolTimingMap={toolTimingMap} llmTimings={llmTimings} />
+          {hasNestedAgents && (
+            <div className="agent-cascade agent-cascade--subagents">
+              <div className="agent-cascade__subhead">SUB-AGENTS</div>
+              {nodes.filter((n) => n.kind === 'AGENT').map((sub, i) => (
+                <div key={`sub-${i}`}>
+                  <SubAgentNode node={sub} onZoom={onZoomIntoSubAgent} />
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      );
     }
     if (nodes.length === 0) {
       return <div className="text-dim">(no agent activity)</div>;
     }
     const hasBlocks = nodes.some((n) => n.kind === 'LLM_CALL' && n.blocks?.length > 0);
-    if (hasBlocks) {
+    if (hasBlocks && !hasNestedAgents) {
       return <ConversationView blocks={nodes.flatMap((n) => n.blocks || [])} toolTimingMap={toolTimingMap} llmTimings={llmTimings} />;
     }
-    // Group consecutive TOOL nodes with matching parallelGroup
-    const cascadeItems = [];
-    for (let i = 0; i < nodes.length; ) {
-      const node = nodes[i];
-      if (node.parallelGroup) {
-        const groupNodes = [];
-        const gid = node.parallelGroup;
-        while (i < nodes.length && nodes[i].parallelGroup === gid) {
-          groupNodes.push(nodes[i]);
-          i++;
-        }
-        cascadeItems.push({ type: 'parallel', nodes: groupNodes, key: `pg-${gid}` });
-      } else {
-        cascadeItems.push({ type: 'single', node, key: `n-${i}` });
-        i++;
-      }
-    }
+    const cascadeItems = buildCascadeItems(nodes);
     return (
       <div className="agent-cascade">
         {cascadeItems.map((item, i) => (
           <div key={item.key}>
             {item.type === 'parallel'
               ? <ParallelToolGroup nodes={item.nodes} />
-              : <CascadeNode node={item.node} />}
+              : <CascadeNode node={item.node} onZoomIntoSubAgent={onZoomIntoSubAgent} />}
             {i < cascadeItems.length - 1 && <div className="cascade-connector">{'│'}<br />{'▼'}</div>}
           </div>
         ))}

@@ -491,17 +491,52 @@ body::before {
 .cascade-parallel-group__header { color: var(--fg-cyan); font-size: 11px; margin-bottom: 6px; }
 .cascade-parallel-group__lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0.5rem; }
 
-/* ── Subagent nesting ──────────────────────────────────────── */
-.cascade-subagent-toggle {
-  background: none; border: none; color: var(--fg-cyan);
-  cursor: pointer; font-size: 11px; margin-top: 6px; padding: 2px 0;
+/* ── AGENT-kind cascade node (zoom into sub-agent) ─────────── */
+.cascade-node--agent {
+  border-color: var(--fg-amber);
+  background: transparent;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  color: inherit;
   font-family: var(--font-mono);
+  transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+              background 160ms ease,
+              border-color 160ms ease;
 }
-.cascade-subagent-toggle:hover { color: var(--fg-muted); }
-
-.cascade-subagent-body {
-  margin-top: 6px; padding: 6px 0 6px 12px;
-  border-left: 2px solid var(--fg-cyan);
+.cascade-node--agent:hover {
+  background: rgba(224, 160, 64, 0.06);
+  transform: translateY(-1px);
+}
+.cascade-node--agent:active {
+  transform: translateY(0) scale(0.99);
+}
+.cascade-agent__zoom-hint {
+  color: var(--fg-muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+.cascade-node--agent:hover .cascade-agent__zoom-hint {
+  color: var(--fg-amber);
+}
+.cascade-agent__summary {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.agent-cascade--subagents {
+  margin-top: 16px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.agent-cascade__subhead {
+  color: var(--fg-muted);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  margin-bottom: 6px;
 }
 
 .cascade-node__error {
@@ -1448,3 +1483,110 @@ button:focus-visible {
 
 .text-empty     { opacity: 0.4; }
 .text-dim       { color: var(--fg-dim); }
+
+/* ── Stacked detail (modal-stack zoom navigation) ──────────────
+ *
+ * Each panel layer is absolutely positioned, transformed in place.
+ * Hardware-accelerated: transform + opacity + filter only.
+ * Depth math + inline transition timing live in StackedDetail.jsx so
+ * the React component owns the contract; this file just provides the
+ * static box model and chrome.                                       */
+
+.stacked-detail {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.stacked-panel {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  /* Tinted shadow toward the background hue — gives the stacked layers
+     a subtle physical edge against the layer behind them. */
+  box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.55),
+              inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  will-change: transform, opacity, filter;
+}
+
+.stacked-panel--top {
+  /* Top panel rests on the static border; ancestors gain an
+     extra inset highlight on the top edge to suggest the recede. */
+  box-shadow: 0 16px 36px -14px rgba(0, 0, 0, 0.7),
+              inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.stacked-panel__scroll {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* Depth indicator dots — fixed to the top-left of the stack region.
+   Each dot represents one level; the trailing dot is the current top. */
+.stacked-depth {
+  position: absolute;
+  top: 10px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  z-index: 20;
+  pointer-events: none;
+  font-family: var(--font-mono);
+}
+
+.stacked-depth__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  display: inline-block;
+  transition: background 180ms ease, transform 180ms ease;
+}
+
+.stacked-depth__dot--active {
+  background: var(--fg-amber);
+  transform: scale(1.25);
+}
+
+.stacked-depth__label {
+  color: var(--fg-dim);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  margin-left: 6px;
+}
+
+/* Esc hint — sits in the top-right of the topmost panel. Clickable
+   as an alternative to the Esc key; non-blocking otherwise. */
+.stacked-esc-hint {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 21;
+  background: rgba(20, 20, 24, 0.78);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.stacked-esc-hint:hover {
+  color: var(--fg-amber);
+  border-color: var(--fg-amber);
+  background: rgba(40, 30, 18, 0.78);
+}
+
+.stacked-esc-hint__arrow {
+  margin-left: 4px;
+  opacity: 0.7;
+}

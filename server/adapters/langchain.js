@@ -526,6 +526,46 @@ function buildTurn(idx, rootSpan, childrenOf, spanById) {
   ];
 
   // ── Scoped agent step builder (for AGENT workflow nodes) ─────────────────
+  //
+  // TODO(sub-agents): LangChain/LangGraph sub-graph detection.
+  //
+  // The canonical schema allows AGENT-kind AgentNodes (recursive) — see
+  // CLAUDE.md "AgentNode (discriminated on `kind`)" — but this builder
+  // flattens all descendant LLM + tool spans into a single list, regardless
+  // of whether they belong to a nested sub-graph. As a result, sub-graph
+  // invocations (one StateGraph calling another) collapse into a flat
+  // cascade and the user cannot drill into the sub-graph as its own scope.
+  //
+  // Detection signals when we have a real trace:
+  //   - A descendant span whose `langsmith.metadata.langgraph_checkpoint_ns`
+  //     contains an additional pipe-delimited segment beyond the enclosing
+  //     scope. LangGraph stamps sub-graph spans with namespaces like
+  //     `parent_node:UUID|child_node:UUID` — additional `|` segments
+  //     indicate nesting depth.
+  //   - A descendant span with `langsmith.metadata.langgraph_node` whose
+  //     value is distinct from the enclosing node — that span and its
+  //     descendants belong to the inner node.
+  //   - The OTEL standard marker `gen_ai.operation.name === 'invoke_agent'`
+  //     on a descendant span.
+  //
+  // Implementation when ready:
+  //   1. Walk descendants of childSpan grouped by `langgraph_checkpoint_ns`
+  //      depth or by `langgraph_node` boundary.
+  //   2. For each grouped sub-tree, use `classifyAgentNodeKind(
+  //        rootSpanId, childrenOf, isLLM, isTool, isAgentSpan)` from
+  //      ./shared.js — where `isAgentSpan` ORs `gen_ai.operation.name ===
+  //      'invoke_agent'` with `langsmith.metadata.langgraph_node` (already
+  //      the pattern used at the workflow level here).
+  //   3. Emit AGENT-kind nodes:
+  //      `{ kind: 'AGENT', agentName: <langgraph_node>, agentType:
+  //        'subagent', nodes: [...], durationMs, startTime, endTime }`
+  //      and recurse so nested sub-graphs classify the same way.
+  //
+  // Reference: see the recursive `promoteSubAgents` IIFE in
+  // server/adapters/claude_code_cli.js for the working pattern. Verify
+  // against a captured LangGraph session that actually invokes a sub-graph
+  // (e.g. one StateGraph compiled into another's tool slot) — we don't
+  // have one yet.
   function buildScopedAgentStep(childSpan) {
     const scopedDescendants = getDescendants(childSpan.spanId, childrenOf);
     const scopedLlmAndToolSpans = scopedDescendants

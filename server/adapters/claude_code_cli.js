@@ -609,42 +609,84 @@ function buildTurn(
     }
   }
 
-  // Reconstruct subagent activity for Agent tool nodes
-  for (let i = 0; i < agentNodes.length; i++) {
-    const node = agentNodes[i];
-    if (node.kind !== 'TOOL' || node.toolName !== 'Agent') continue;
-    if (!node._toolSpanId) continue;
+  // Promote Agent-tool invocations to canonical AGENT-kind AgentNodes.
+  //
+  // Detection: a TOOL node whose `toolName === 'Agent'` and which has a
+  // claude_code.tool.execution child span defines a sub-agent window. All
+  // subsequent agentNodes whose _eventTime falls inside that window were
+  // emitted by the sub-agent and belong nested under it.
+  //
+  // The promotion is recursive: after pulling sub-agent nodes into the new
+  // AGENT node's `nodes` array, we re-run the same pass on that array so
+  // Task-within-Task (sub-sub-agents) classify the same way at any depth.
+  // This matches the "same recognition logic at every depth" contract from
+  // the canonical schema (see CLAUDE.md AgentNode AGENT kind).
+  (function promoteSubAgents(nodes) {
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      if (node.kind !== 'TOOL' || node.toolName !== 'Agent') continue;
+      if (!node._toolSpanId) continue;
 
-    const children = childSpansByParent[node._toolSpanId] || [];
-    const execSpan = children.find(s => s.name === 'claude_code.tool.execution');
-    if (!execSpan) continue;
+      const children = childSpansByParent[node._toolSpanId] || [];
+      const execSpan = children.find(s => s.name === 'claude_code.tool.execution');
+      if (!execSpan) continue;
 
-    const execStart = BigInt(execSpan.startTimeUnixNano);
-    const execEnd = BigInt(execSpan.endTimeUnixNano);
+      const execStart = BigInt(execSpan.startTimeUnixNano);
+      const execEnd = BigInt(execSpan.endTimeUnixNano);
 
-    const subIndices = [];
-    for (let j = i + 1; j < agentNodes.length; j++) {
-      const candidate = agentNodes[j];
-      if (!candidate._eventTime) continue;
-      if (candidate._eventTime >= execStart && candidate._eventTime <= execEnd) {
-        subIndices.push(j);
+      const subIndices = [];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const candidate = nodes[j];
+        if (!candidate._eventTime) continue;
+        if (candidate._eventTime >= execStart && candidate._eventTime <= execEnd) {
+          subIndices.push(j);
+        }
       }
-    }
 
-    if (subIndices.length > 0) {
-      node.subagentNodes = subIndices.map(j => agentNodes[j]);
-      for (const j of subIndices.reverse()) {
-        agentNodes.splice(j, 1);
-      }
-    }
-  }
+      if (subIndices.length === 0) continue;
 
-  // Clean up internal temp fields
+      const subNodes = subIndices.map(j => nodes[j]);
+      for (const j of subIndices.reverse()) nodes.splice(j, 1);
+
+      // Recurse so a Task call inside this sub-agent is itself promoted.
+      promoteSubAgents(subNodes);
+
+      // Pull subagent_type from the tool's parameters (set during tool event
+      // construction earlier). Falls back to the generic 'Agent' label.
+      let agentType = 'subagent';
+      let agentName = 'Agent';
+      try {
+        const parsed = node.toolInput ? JSON.parse(node.toolInput) : {};
+        if (parsed.subagent_type) {
+          agentName = parsed.subagent_type;
+          agentType = 'subagent';
+        }
+      } catch {}
+
+      const startTimeIso = nanoToDate(execSpan.startTimeUnixNano).toISOString();
+      const endTimeIso = nanoToDate(execSpan.endTimeUnixNano).toISOString();
+      const subDurationMs = Number((execEnd - execStart) / 1000000n);
+
+      nodes[i] = {
+        kind: 'AGENT',
+        agentName,
+        agentType,
+        source: node.source || '',
+        nodes: subNodes,
+        durationMs: subDurationMs,
+        startTime: startTimeIso,
+        endTime: endTimeIso,
+        _eventTime: node._eventTime,
+      };
+    }
+  })(agentNodes);
+
+  // Clean up internal temp fields (recurses into nested AGENT.nodes)
   (function cleanTempFields(nodes) {
     for (const node of nodes) {
       delete node._eventTime;
       delete node._toolSpanId;
-      if (node.subagentNodes) cleanTempFields(node.subagentNodes);
+      if (node.kind === 'AGENT' && Array.isArray(node.nodes)) cleanTempFields(node.nodes);
     }
   })(agentNodes);
 
