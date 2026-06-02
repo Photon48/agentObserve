@@ -1,7 +1,7 @@
 import { getAttr } from '../loader.js';
 import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendants } from './shared.js';
 
-export const FRAMEWORK = 'anthropic';
+export const FRAMEWORK = 'anthropic-sdk';
 
 export function canHandle(rawData) {
   return rawData.spans?.some((s) => s.name === 'claude_code.interaction') ?? false;

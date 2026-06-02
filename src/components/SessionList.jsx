@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSessions } from '../hooks/useSessions.js';
 import { formatCost, formatTokens, formatDate, truncateId } from '../utils/format.js';
+import { FRAMEWORK_ORDER } from '../utils/framework.js';
+import { SessionTabs } from './SessionTabs.jsx';
 
 const FILTER_OPTIONS = ['1h', '4h', '12h', '24h', '2d', '7d', '14d', 'all', 'custom'];
 const FILTER_MS = {
@@ -13,6 +15,7 @@ export function SessionList({ onSelect }) {
   const { sessions, loading, error } = useSessions();
   const [search, setSearch] = useState('');
   const [dateFilter, setDateFilter] = useState('all');
+  const [selectedFramework, setSelectedFramework] = useState(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [dropdownIdx, setDropdownIdx] = useState(0);
@@ -21,8 +24,27 @@ export function SessionList({ onSelect }) {
   const rowRefs = useRef([]);
   const dropdownRef = useRef(null);
 
+  // Lazy-init framework tab: pick the framework with the most sessions, with
+  // FRAMEWORK_ORDER as the tiebreaker. Fires once when sessions first arrive.
+  useEffect(() => {
+    if (selectedFramework !== null || sessions.length === 0) return;
+    const counts = {};
+    for (const s of sessions) {
+      const f = s.framework || 'unknown';
+      counts[f] = (counts[f] || 0) + 1;
+    }
+    const ranked = Object.keys(counts).sort((a, b) => {
+      if (counts[b] !== counts[a]) return counts[b] - counts[a];
+      const ai = FRAMEWORK_ORDER.indexOf(a);
+      const bi = FRAMEWORK_ORDER.indexOf(b);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+    setSelectedFramework(ranked[0]);
+  }, [sessions, selectedFramework]);
+
   const now = Date.now();
   const filtered = sessions.filter((s) => {
+    if (selectedFramework && s.framework !== selectedFramework) return false;
     if (search && !s.id.toLowerCase().includes(search.toLowerCase())) return false;
     if (dateFilter === 'all') return true;
     if (dateFilter === 'custom') {
@@ -36,7 +58,7 @@ export function SessionList({ onSelect }) {
   });
 
   // Reset selectedIdx when filters change
-  useEffect(() => { setSelectedIdx(0); }, [search, dateFilter, customFrom, customTo]);
+  useEffect(() => { setSelectedIdx(0); }, [search, dateFilter, customFrom, customTo, selectedFramework]);
 
   // Clamp selectedIdx
   useEffect(() => {
@@ -199,6 +221,11 @@ export function SessionList({ onSelect }) {
         )}
         <span className="session-filter__count">{filtered.length}/{sessions.length}</span>
       </div>
+      <SessionTabs
+        sessions={sessions}
+        selected={selectedFramework}
+        onSelect={setSelectedFramework}
+      />
       <div className="session-list__table-wrap">
         <table className="session-list__table">
           <thead>
@@ -229,6 +256,11 @@ export function SessionList({ onSelect }) {
             ))}
           </tbody>
         </table>
+        {filtered.length === 0 && (
+          <div className="session-list__empty-filter">
+            No sessions match the current filter.
+          </div>
+        )}
       </div>
     </div>
   );

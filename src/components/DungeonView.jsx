@@ -416,9 +416,11 @@ export function DungeonView({ sessionId, onExit }) {
               />
               <TurnIOPanel turn={currentTurn} />
               <WorkflowMinimap
-                graph={graph}
+                turn={currentTurn}
                 groupIdx={graphState.groupIdx}
                 nodeIdx={graphState.nodeIdx}
+                detailMode={detailMode}
+                subAgentStack={subAgentStack}
                 onNodeSelect={(gIdx, nIdx) => setGraphState({ groupIdx: gIdx, nodeIdx: nIdx })}
               />
             </div>
@@ -438,9 +440,11 @@ export function DungeonView({ sessionId, onExit }) {
                 onPop={onExitDetail}
               />
               <WorkflowMinimap
-                graph={graph}
+                turn={currentTurn}
                 groupIdx={graphState.groupIdx}
                 nodeIdx={graphState.nodeIdx}
+                detailMode={detailMode}
+                subAgentStack={subAgentStack}
                 onNodeSelect={(gIdx, nIdx) => setGraphState({ groupIdx: gIdx, nodeIdx: nIdx })}
               />
             </div>

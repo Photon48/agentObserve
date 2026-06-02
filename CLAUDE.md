@@ -283,7 +283,7 @@ Every adapter returns this shape. Fields a framework can't populate use the list
 
 ### Session
 ```
-id, framework ('anthropic'|'langchain'), startTime, endTime, turnCount,
+id, framework ('claude-code-cli'|'anthropic-sdk'|'langchain'), startTime, endTime, turnCount,
 totalCost (0), totalInputTokens, totalOutputTokens, systemPrompt (''),
 availableTools ([]), turns[]
 ```

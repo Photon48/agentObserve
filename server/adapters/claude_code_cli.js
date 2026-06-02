@@ -1,7 +1,7 @@
 import { getAttr } from '../loader.js';
 import { nanoToMs, nanoToDate, inferToolSchemas } from './shared.js';
 
-export const FRAMEWORK = 'anthropic';
+export const FRAMEWORK = 'claude-code-cli';
 
 // Matches CLI telemetry: has user_prompt logs but NO interaction spans
 export function canHandle(rawData) {
