@@ -1,15 +1,16 @@
 :root {
   --bg:         #0c0c0f;
-  --bg-surface: #141418;
+  --bg-surface: #16161d;
   --bg-raised:  #1a1a20;
   --border:     #2a2a32;
   --fg-green:   #3dd68c;
   --fg-amber:   #e0a040;
-  --fg-dim:     #52525e;
+  --fg-dim:     #8e8e9c;
   --fg-red:     #e5534b;
   --fg-cyan:    #58a6ff;
   --fg-purple:  #bc8cff;
-  --fg-muted:   #8b8b96;
+  --fg-muted:   #b8b8c6;
+  --fg-soft:    #d4d4dc;
   --font-display: 'Geist', 'Inter', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
   --radius-sm: 4px;
@@ -34,7 +35,7 @@ body,
   background: var(--bg);
   color: var(--fg-green);
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -167,7 +168,7 @@ body::before {
   height: 100%;
   display: grid;
   grid-template-rows: auto 1fr auto;
-  grid-template-columns: 220px 1fr 180px;
+  grid-template-columns: 260px 1fr 260px;
   grid-template-areas: "sysprompt hud hud" "sysprompt step tools" "sysprompt nav nav";
   overflow: hidden;
 }
@@ -189,7 +190,7 @@ body::before {
 
 .hud__cell {
   padding: 8px 16px;
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.06em;
   display: flex;
   align-items: center;
@@ -501,15 +502,15 @@ body::before {
 
 .tool-sidebar__header {
   color: var(--fg-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.12em;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .tool-sidebar__empty {
-  color: var(--fg-dim);
-  font-size: 11px;
+  color: var(--fg-muted);
+  font-size: 12px;
 }
 
 .tool-sidebar__empty-state {
@@ -522,26 +523,26 @@ body::before {
 .tool-sidebar__empty-label {
   color: var(--fg-cyan);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.06em;
 }
 
 .tool-sidebar__empty-desc {
-  color: var(--fg-dim);
-  font-size: 10px;
+  color: var(--fg-soft);
+  font-size: 12px;
   white-space: pre-wrap;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 
 .tool-sidebar__item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .tool-sidebar__name {
   color: var(--fg-cyan);
-  font-size: 11px;
+  font-size: 13px;
   word-break: break-word;
   transition: color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -670,6 +671,8 @@ body::before {
   width: 100%;
   height: 100%;
   overflow-y: auto;
+  display: flex;
+  justify-content: center;
 }
 
 .wf-minimap {
@@ -862,17 +865,17 @@ body::before {
 
 .sysprompt-panel__header {
   color: var(--fg-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.12em;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   flex-shrink: 0;
 }
 
 .sysprompt-panel__body {
-  color: var(--fg-dim);
-  font-size: 10px;
-  line-height: 1.6;
+  color: var(--fg-soft);
+  font-size: 13px;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
   overflow-y: auto;
@@ -1008,8 +1011,8 @@ body::before {
 }
 
 .tool-schema {
-  border-left: 2px solid var(--fg-dim);
-  padding: 4px 0 4px 6px;
+  border-left: 2px solid var(--border);
+  padding: 4px 0 4px 8px;
   margin-top: 2px;
   display: flex;
   flex-direction: column;
@@ -1018,8 +1021,8 @@ body::before {
 }
 
 .tool-schema__desc-header {
-  color: var(--fg-dim);
-  font-size: 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
   font-style: italic;
   margin-bottom: 2px;
   word-break: break-word;
@@ -1073,8 +1076,8 @@ body::before {
   margin-top: 4px;
 }
 
-.tool-schema__param { color: var(--fg-cyan); font-size: 10px; }
-.tool-schema__type  { color: var(--fg-dim); font-size: 9px; }
+.tool-schema__param { color: var(--fg-cyan); font-size: 12px; }
+.tool-schema__type  { color: var(--fg-soft); font-size: 11px; }
 
 .tool-schema__req {
   font-size: 9px;
@@ -1402,7 +1405,7 @@ body::before {
 
 /* ── Node Detail View ────────────────────────────────────────── */
 
-.detail-view { padding: 20px; overflow-y: auto; }
+.detail-view { width: 100%; max-width: 880px; padding: 32px 28px; overflow-y: auto; }
 .detail-view__header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-weight: 700; letter-spacing: 0.02em; }
 .detail-view__kind   { color: var(--fg-amber); font-size: 12px; }
 .detail-view__label  { color: var(--fg-green); }
