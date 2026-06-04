@@ -167,8 +167,24 @@ function TurnIOPanel({ turn }) {
   );
 }
 
-function ToolDirectorySidebar({ tools, emptyState, nodeName, mode, onStep }) {
-  const [expanded, setExpanded] = useState(null);
+// Mirror of the server-side helper in `server/adapters/shared.js` — kept here
+// so the sidebar can derive call counts on the fly for sub-agent zoom levels,
+// which are synthesised client-side and don't carry a pre-derived map.
+// Direct-children only: AGENT-kind nodes are NOT descended into, so each
+// agent level shows only its own tool calls (L1 ignores L2's calls; entering
+// L2 shows L2 and ignores L3; etc).
+function collectToolCallsFromAgentNodes(nodes) {
+  const counts = {};
+  for (const n of nodes || []) {
+    if (n?.kind === 'TOOL' && n.toolName) {
+      counts[n.toolName] = (counts[n.toolName] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function ToolRow({ tool, count, unused }) {
+  const [open, setOpen] = useState(false);
   // Expand state for nested schema rows — keyed by dot-path so each level
   // is independent. Generic over any JSON Schema shape.
   const [openPaths, setOpenPaths] = useState(() => new Set());
@@ -197,7 +213,7 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName, mode, onStep }) {
 
   function renderRow(name, prop, required, path) {
     const expandable = hasChildren(prop);
-    const open = openPaths.has(path);
+    const isOpen = openPaths.has(path);
     return (
       <div key={path} className="tool-schema__row">
         <div
@@ -205,7 +221,7 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName, mode, onStep }) {
           onClick={expandable ? () => togglePath(path) : undefined}
         >
           <span className="tool-schema__chevron" aria-hidden="true">
-            {expandable ? (open ? '▾' : '▸') : ''}
+            {expandable ? (isOpen ? '▾' : '▸') : ''}
           </span>
           <span className="tool-schema__param">{name}</span>
           <span className="tool-schema__meta">
@@ -218,7 +234,7 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName, mode, onStep }) {
         {prop.description && (
           <div className="tool-schema__desc">{prop.description}</div>
         )}
-        {expandable && open && (
+        {expandable && isOpen && (
           <div className="tool-schema__nested">
             {prop.type === 'object' && renderProperties(prop, path)}
             {prop.type === 'array' && renderProperties(prop.items, `${path}[]`)}
@@ -236,9 +252,51 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName, mode, onStep }) {
     );
   }
 
-  function renderSchema(schema) {
-    return renderProperties(schema, '');
+  return (
+    <div className="tool-sidebar__item">
+      <div
+        className={`tool-sidebar__name${unused ? ' tool-sidebar__name--unused' : ''}`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="tool-sidebar__chevron">{open ? '▾' : '▸'}</span>
+        <span className="tool-sidebar__tool-name">{tool.name}</span>
+        {count > 0 && <span className="tool-sidebar__count">×{count}</span>}
+      </div>
+      {open && (
+        <div className="tool-schema">
+          {tool.description && (
+            <div className="tool-schema__desc-header">{tool.description}</div>
+          )}
+          {tool.inputSchema && Object.keys(tool.inputSchema.properties || {}).length > 0 && (
+            <>
+              <div className="tool-schema__eyebrow">PARAMETERS</div>
+              <div className="tool-schema__params">
+                {renderProperties(tool.inputSchema, '')}
+              </div>
+            </>
+          )}
+          {tool.inputSchema && Object.keys(tool.inputSchema.properties || {}).length === 0 && (
+            <div className="tool-schema__empty">no parameters</div>
+          )}
+          {!tool.inputSchema && (
+            <div className="tool-schema__empty">no schema available</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolDirectorySidebar({ tools, callCounts, emptyState, nodeName, mode, onStep }) {
+  const counts = callCounts || {};
+  const called = [];
+  const unused = [];
+  for (const t of tools) {
+    if (counts[t.name] > 0) called.push(t);
+    else unused.push(t);
   }
+  called.sort((a, b) => (counts[b.name] - counts[a.name]) || a.name.localeCompare(b.name));
+  unused.sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div className="tool-sidebar">
@@ -250,40 +308,24 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName, mode, onStep }) {
           </div>
         : tools.length === 0
           ? <div className="tool-sidebar__empty">— not available</div>
-          : tools.map((t, i) => (
-              <div key={i} className="tool-sidebar__item">
-                <div
-                  className="tool-sidebar__name"
-                  onClick={() => setExpanded(expanded === i ? null : i)}
-                >
-                  <span className="tool-sidebar__chevron">
-                    {expanded === i ? '▾' : '▸'}
-                  </span>
-                  {t.name}
+          : <>
+              {called.length > 0 && (
+                <div className="tool-sidebar__section">
+                  <div className="tool-sidebar__section-head">CALLED · {called.length}</div>
+                  {called.map((t) => (
+                    <ToolRow key={`c-${t.name}`} tool={t} count={counts[t.name]} />
+                  ))}
                 </div>
-                {expanded === i && (
-                  <div className="tool-schema">
-                    {t.description && (
-                      <div className="tool-schema__desc-header">{t.description}</div>
-                    )}
-                    {t.inputSchema && Object.keys(t.inputSchema.properties || {}).length > 0 && (
-                      <>
-                        <div className="tool-schema__eyebrow">PARAMETERS</div>
-                        <div className="tool-schema__params">
-                          {renderSchema(t.inputSchema)}
-                        </div>
-                      </>
-                    )}
-                    {t.inputSchema && Object.keys(t.inputSchema.properties || {}).length === 0 && (
-                      <div className="tool-schema__empty">no parameters</div>
-                    )}
-                    {!t.inputSchema && (
-                      <div className="tool-schema__empty">no schema available</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))
+              )}
+              {unused.length > 0 && (
+                <div className="tool-sidebar__section">
+                  <div className="tool-sidebar__section-head">UNUSED · {unused.length}</div>
+                  {unused.map((t) => (
+                    <ToolRow key={`u-${t.name}`} tool={t} unused />
+                  ))}
+                </div>
+              )}
+            </>
       }
     </div>
   );
@@ -429,6 +471,19 @@ export function DungeonView({ sessionId, onExit }) {
   const leftPrompt = isLLMNode ? '' : session?.systemPrompt;
   const leftLabel = 'SYSTEM PROMPT';
 
+  // Resolve which AgentStep's tool calls drive the sidebar's CALLED/UNUSED
+  // partition. Per-AGENT-step scope: when zoomed into a sub-agent, scope to
+  // that sub-agent's subtree; otherwise scope to the selected AGENT workflow
+  // node's agentStepData. Sub-agent entries are synthesised client-side and
+  // don't carry the adapter-derived map — fall back to deriving on the fly.
+  const activeAgentStep =
+    subAgentStack.length > 0
+      ? subAgentStack[subAgentStack.length - 1].agentStep
+      : (selectedNode?.kind === 'AGENT' ? selectedNode.agentStepData : null);
+  const callCounts = activeAgentStep
+    ? (activeAgentStep.toolCallCounts || collectToolCallsFromAgentNodes(activeAgentStep.nodes))
+    : {};
+
   if (loading) return (
     <div className="center-msg">
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
@@ -510,6 +565,7 @@ export function DungeonView({ sessionId, onExit }) {
       {isLLMNode
         ? <ToolDirectorySidebar
             tools={[]}
+            callCounts={{}}
             emptyState="llm"
             nodeName={selectedNode?.label}
             mode={toolsMode}
@@ -517,6 +573,7 @@ export function DungeonView({ sessionId, onExit }) {
           />
         : <ToolDirectorySidebar
             tools={session?.availableTools || []}
+            callCounts={callCounts}
             mode={toolsMode}
             onStep={stepTools}
           />

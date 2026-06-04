@@ -214,6 +214,27 @@ export function classifyAgentNodeKind(
   return (llmCount >= 2 || hasTool) ? 'AGENT' : null;
 }
 
+// ── Tool-call summary (called vs. available) ────────────────────────────────
+//
+// Counts TOOL-kind invocations among the DIRECT children of the supplied
+// AgentNode[]. Does NOT recurse into AGENT-kind children — sub-agents own
+// their own scope, and their tool calls surface only when the operator
+// zooms into that sub-agent. Used to derive the "CALLED" vs "UNUSED"
+// partition in the tools sidebar, scoped to the currently-selected agent
+// level (L1 sees only L1 calls; entering L2 reveals L2's direct calls; etc).
+//
+// Pure and framework-agnostic — operates on the canonical AgentNode shape.
+
+export function collectToolCallsFromAgentNodes(nodes) {
+  const counts = {};
+  for (const n of nodes || []) {
+    if (n?.kind === 'TOOL' && n.toolName) {
+      counts[n.toolName] = (counts[n.toolName] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
 // ── Infer tool schemas from observed inputs ──────────────────────────────────
 //
 // When tool schemas aren't available in the telemetry (no request bodies for

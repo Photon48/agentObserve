@@ -1,5 +1,5 @@
 import { getAttr } from '../loader.js';
-import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendants } from './shared.js';
+import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendants, collectToolCallsFromAgentNodes } from './shared.js';
 
 export const FRAMEWORK = 'anthropic-sdk';
 
@@ -447,7 +447,11 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     const body = log.body?.stringValue || '';
     if (body === 'claude_code.api_request') {
       const querySource = getAttr(log.attributes, 'query_source');
-      if (querySource === 'generate_session_title') continue;
+      // Skip CLI-internal calls that don't belong to the agent's conversation:
+      // session-title generation and the post-turn "what should the user type
+      // next?" prompt suggestion. Including them would make the suggestion's
+      // tiny reply masquerade as the agent's final response.
+      if (querySource === 'generate_session_title' || querySource === 'prompt_suggestion') continue;
       events.push({ type: 'llm', log, time: BigInt(log.timeUnixNano) });
     } else if (body === 'claude_code.tool_decision') {
       const toolUseId = getAttr(log.attributes, 'tool_use_id');
@@ -804,8 +808,12 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     }
   })(agentNodes, agentToolSpansForTurn);
 
+  // Derived tool-call summary — counts every TOOL-kind invocation by name,
+  // recursing into nested AGENT-kind sub-agents so calls roll up.
+  const toolCallCounts = collectToolCallsFromAgentNodes(agentNodes);
+
   // AGENT step (collapsed cascade of all LLM/TOOL/HOOK nodes)
-  steps.push({ type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre, upstreamPost, userPrompt });
+  steps.push({ type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts });
 
   // FINAL step
   steps.push({
@@ -824,7 +832,7 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     const pEnd   = BigInt(p.endTimeUnixNano);
     return pStart <= iStart && pEnd >= iEnd;
   }) || null;
-  const agentStepData = { type: 'AGENT', nodes: agentNodes, capturedBlocks, userPrompt };
+  const agentStepData = { type: 'AGENT', nodes: agentNodes, capturedBlocks, userPrompt, toolCallCounts };
   const workflowGraph = buildWorkflowGraph(pipelineSpan, childrenOf, interactionSpan, agentStepData, preSpans, postSpans);
 
   return {

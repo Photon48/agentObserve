@@ -7,6 +7,7 @@ import {
   getDescendants,
   detectWorkflowNodeKind,
   extractTextContent,
+  collectToolCallsFromAgentNodes,
 } from './shared.js';
 
 export const FRAMEWORK = 'langchain';
@@ -559,10 +560,14 @@ function buildTurn(idx, rootSpan, childrenOf, spanById) {
   // ── Captured blocks: unified conversation stream ──────────────────────────
   const capturedBlocks = buildCapturedBlocks(agentNodes, llmAndToolSpans);
 
+  // Derived tool-call summary — counts every TOOL-kind invocation by name,
+  // recursing into nested AGENT-kind sub-agents so calls roll up.
+  const toolCallCounts = collectToolCallsFromAgentNodes(agentNodes);
+
   // ── Steps ─────────────────────────────────────────────────────────────────
   const steps = [
     { type: 'PROMPT', text: userPrompt },
-    { type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre: [], upstreamPost: [], userPrompt },
+    { type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts },
     { type: 'FINAL', totalCost: 0, totalInputTokens, totalOutputTokens, durationMs },
   ];
 
@@ -661,7 +666,8 @@ function buildTurn(idx, rootSpan, childrenOf, spanById) {
     }
 
     const scopedBlocks = buildCapturedBlocks(scopedNodes, scopedLlmAndToolSpans);
-    return { type: 'AGENT', nodes: scopedNodes, capturedBlocks: scopedBlocks, upstreamPre: [], upstreamPost: [], userPrompt };
+    const scopedToolCallCounts = collectToolCallsFromAgentNodes(scopedNodes);
+    return { type: 'AGENT', nodes: scopedNodes, capturedBlocks: scopedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts: scopedToolCallCounts };
   }
 
   // ── Workflow graph ────────────────────────────────────────────────────────

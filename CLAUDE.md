@@ -299,7 +299,7 @@ totalInputTokens, totalOutputTokens, steps[], workflowGraph
 
 ### Step (discriminated on `type`)
 - **PROMPT**: `{ type, text }`
-- **AGENT**: `{ type, nodes: AgentNode[], capturedBlocks, upstreamPre, upstreamPost, userPrompt }`
+- **AGENT**: `{ type, nodes: AgentNode[], capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts }` — `toolCallCounts: Record<string, number>` is a derived summary mapping each tool name to its invocation count among the **direct** TOOL-kind children of this AGENT step's `nodes` list. Calls inside nested AGENT-kind sub-agents are excluded — they surface only when the operator zooms into that sub-agent, which carries its own scope. Empty `{}` when no tools were called at this level. Produced by the shared `collectToolCallsFromAgentNodes` helper in `shared.js`; the frontend uses it to partition `session.availableTools` into "called" vs "unused" in the tools sidebar.
 - **FINAL**: `{ type, totalCost, totalInputTokens, totalOutputTokens, durationMs }`
 
 ### AgentNode (discriminated on `kind`)
