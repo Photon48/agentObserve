@@ -182,8 +182,10 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_LOG_USER_PROMPTS=1     # include user prompt text in logs
 OTEL_LOG_TOOL_DETAILS=1     # include tool names and metadata
 OTEL_LOG_TOOL_CONTENT=1     # include full tool input/output content
-OTEL_LOG_RAW_API_BODIES=1   # include full API request/response JSON (enables capturedBlocks)
+OTEL_LOG_RAW_API_BODIES=file:/tmp/agentobserve_bodies  # full API JSON via file refs (no 60KB truncation)
 ```
+
+**Why `file:<dir>` instead of `=1`:** the CLI caps inline body payloads at 60 KB. The JSON field order is `model → messages → system → tools → …`, so once messages cross ~60 KB (which happens by turn 2 of any non-trivial conversation), the `tools` array gets chopped off entirely and `safeParseBody` in `loader.js` returns null for those events. The dashboard then has no tool descriptions or input schemas to display. File mode writes each body to `<dir>/<uuid>.{request,response}.json`; the OTEL receiver moves these files into `telemetry/<session>/api_bodies/` on arrival, and the loader reads them via `body_ref`.
 
 **Minimal integration pattern (Python SDK):**
 
@@ -208,6 +210,7 @@ options = ClaudeCodeOptions(
         "OTEL_TRACES_EXPORTER": "otlp",
         "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_LOG_RAW_API_BODIES": "file:/tmp/agentobserve_bodies",
     },
 )
 
@@ -228,7 +231,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
 OTEL_LOG_USER_PROMPTS=1 \
 OTEL_LOG_TOOL_DETAILS=1 \
 OTEL_LOG_TOOL_CONTENT=1 \
-OTEL_LOG_RAW_API_BODIES=1 \
+OTEL_LOG_RAW_API_BODIES=file:/tmp/agentobserve_bodies \
 claude
 ```
 

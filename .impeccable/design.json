@@ -1,0 +1,322 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-04T00:00:00Z",
+  "title": "Design System: agentObserve",
+  "extensions": {
+    "colorMeta": {
+      "off-black": {
+        "role": "neutral",
+        "displayName": "Off-Black",
+        "canonical": "oklch(13% 0.005 285)",
+        "tonalRamp": [
+          "oklch(8% 0.005 285)",
+          "oklch(13% 0.005 285)",
+          "oklch(18% 0.006 285)",
+          "oklch(26% 0.008 285)",
+          "oklch(38% 0.010 285)",
+          "oklch(54% 0.011 285)",
+          "oklch(72% 0.011 285)",
+          "oklch(92% 0.008 285)"
+        ]
+      },
+      "console-steel": {
+        "role": "neutral",
+        "displayName": "Console Steel",
+        "canonical": "oklch(18% 0.008 285)",
+        "tonalRamp": [
+          "oklch(10% 0.006 285)",
+          "oklch(15% 0.007 285)",
+          "oklch(20% 0.008 285)",
+          "oklch(28% 0.010 285)",
+          "oklch(40% 0.012 285)",
+          "oklch(56% 0.013 285)",
+          "oklch(74% 0.013 285)",
+          "oklch(92% 0.009 285)"
+        ]
+      },
+      "iron": {
+        "role": "neutral",
+        "displayName": "Iron",
+        "canonical": "oklch(20% 0.010 285)",
+        "tonalRamp": [
+          "oklch(11% 0.007 285)",
+          "oklch(16% 0.008 285)",
+          "oklch(22% 0.010 285)",
+          "oklch(30% 0.012 285)",
+          "oklch(42% 0.013 285)",
+          "oklch(58% 0.014 285)",
+          "oklch(76% 0.013 285)",
+          "oklch(92% 0.010 285)"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Rule",
+        "canonical": "oklch(27% 0.012 280)",
+        "tonalRamp": [
+          "oklch(13% 0.008 280)",
+          "oklch(20% 0.010 280)",
+          "oklch(27% 0.012 280)",
+          "oklch(36% 0.014 280)",
+          "oklch(48% 0.014 280)",
+          "oklch(62% 0.014 280)",
+          "oklch(78% 0.012 280)",
+          "oklch(93% 0.008 280)"
+        ]
+      },
+      "phosphor": {
+        "role": "primary",
+        "displayName": "Phosphor Green",
+        "canonical": "oklch(78% 0.18 158)",
+        "tonalRamp": [
+          "oklch(20% 0.06 158)",
+          "oklch(34% 0.10 158)",
+          "oklch(48% 0.14 158)",
+          "oklch(60% 0.17 158)",
+          "oklch(70% 0.19 158)",
+          "oklch(78% 0.18 158)",
+          "oklch(87% 0.13 158)",
+          "oklch(95% 0.07 158)"
+        ]
+      },
+      "amber": {
+        "role": "secondary",
+        "displayName": "Sodium Amber",
+        "canonical": "oklch(76% 0.14 75)",
+        "tonalRamp": [
+          "oklch(22% 0.05 75)",
+          "oklch(36% 0.08 75)",
+          "oklch(50% 0.11 75)",
+          "oklch(62% 0.13 75)",
+          "oklch(70% 0.14 75)",
+          "oklch(76% 0.14 75)",
+          "oklch(86% 0.10 75)",
+          "oklch(95% 0.05 75)"
+        ]
+      },
+      "wire": {
+        "role": "secondary",
+        "displayName": "Wire Cyan",
+        "canonical": "oklch(72% 0.14 250)",
+        "tonalRamp": [
+          "oklch(22% 0.05 250)",
+          "oklch(34% 0.08 250)",
+          "oklch(46% 0.11 250)",
+          "oklch(58% 0.13 250)",
+          "oklch(66% 0.14 250)",
+          "oklch(72% 0.14 250)",
+          "oklch(84% 0.10 250)",
+          "oklch(95% 0.05 250)"
+        ]
+      },
+      "halt": {
+        "role": "tertiary",
+        "displayName": "Halt Red",
+        "canonical": "oklch(65% 0.19 28)",
+        "tonalRamp": [
+          "oklch(22% 0.07 28)",
+          "oklch(34% 0.11 28)",
+          "oklch(46% 0.15 28)",
+          "oklch(56% 0.18 28)",
+          "oklch(65% 0.19 28)",
+          "oklch(74% 0.16 28)",
+          "oklch(85% 0.11 28)",
+          "oklch(94% 0.05 28)"
+        ]
+      },
+      "hook": {
+        "role": "tertiary",
+        "displayName": "Hook Purple",
+        "canonical": "oklch(74% 0.15 300)",
+        "tonalRamp": [
+          "oklch(22% 0.06 300)",
+          "oklch(36% 0.09 300)",
+          "oklch(48% 0.12 300)",
+          "oklch(60% 0.14 300)",
+          "oklch(68% 0.15 300)",
+          "oklch(74% 0.15 300)",
+          "oklch(86% 0.10 300)",
+          "oklch(95% 0.05 300)"
+        ]
+      },
+      "soft": {
+        "role": "neutral",
+        "displayName": "Soft Text",
+        "canonical": "oklch(86% 0.005 280)"
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Text",
+        "canonical": "oklch(82% 0.008 280)"
+      },
+      "dim": {
+        "role": "neutral",
+        "displayName": "Dim Text",
+        "canonical": "oklch(70% 0.010 280)"
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Top-of-page section title (session list header). Sentence case." },
+      "title": { "displayName": "Title", "purpose": "Block headers inside panels (tool header, conv block header, workflow node header)." },
+      "body": { "displayName": "Body", "purpose": "Default prose; rare in this UI. Wraps to <=72ch when present." },
+      "mono-data": { "displayName": "Mono Data", "purpose": "Every numeric value, ID, timestamp, JSON payload, data table cell. Always tabular-nums." },
+      "label": { "displayName": "Label", "purpose": "HUD cells, panel headers, column heads. Uppercase by content, <=4 words." },
+      "rail": { "displayName": "Rail", "purpose": "Collapsed-panel vertical rail label. The only writing-mode vertical text in the system." }
+    },
+    "shadows": [
+      {
+        "name": "selected-phosphor-glow",
+        "value": "0 0 0 1px #3dd68c, 0 4px 12px rgba(61, 214, 140, 0.15)",
+        "purpose": "Selected workflow node (AGENT kind). Crisp ring + diffuse halo in role color."
+      },
+      {
+        "name": "selected-wire-glow",
+        "value": "0 0 0 1px #58a6ff, 0 4px 12px rgba(88, 166, 255, 0.15)",
+        "purpose": "Selected workflow node (LLM kinds)."
+      },
+      {
+        "name": "active-timeline-glow",
+        "value": "0 0 6px rgba(61, 214, 140, 0.5)",
+        "purpose": "Active timeline segment. Pure halo, no ring."
+      },
+      {
+        "name": "minimap-glow-phosphor",
+        "value": "0 0 5px #3dd68c",
+        "purpose": "Selected minimap node (agent)."
+      },
+      {
+        "name": "minimap-glow-wire",
+        "value": "0 0 5px #58a6ff",
+        "purpose": "Selected minimap node (LLM)."
+      }
+    ],
+    "motion": [
+      { "name": "ease-standard", "value": "cubic-bezier(0.4, 0, 0.2, 1)", "purpose": "Default state-change easing (hover, color, background)." },
+      { "name": "ease-out-emphatic", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Panel collapse/expand (220ms) and agent-node lift (160ms). Settles deliberately." },
+      { "name": "ease-out-bounce", "value": "cubic-bezier(0.34, 1.56, 0.64, 1)", "purpose": "Workflow node hover lift only. The system's one bouncy transition; do not propagate." },
+      { "name": "dur-instant", "value": "120ms", "purpose": "Micro-press feedback (panel-stepper :active scale 0.94)." },
+      { "name": "dur-fast", "value": "150ms", "purpose": "Hover color/background transitions on data rows and segments." },
+      { "name": "dur-medium", "value": "200ms", "purpose": "Standard transition on focusable elements (workflow-node, decision badges)." },
+      { "name": "dur-panel", "value": "220ms", "purpose": "Panel collapse/expand grid-template-columns transition. The documented exception to the no-animating-layout rule." }
+    ],
+    "breakpoints": [
+      { "name": "desktop-min", "value": "1280px", "purpose": "The dashboard is desktop-first; the dungeon-view 3-column grid (sysprompt | step | tools) assumes >=1280px." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Session Row (selected)",
+      "kind": "custom",
+      "refersTo": "session-row-selected",
+      "description": "Entry-point session table row in its selected state. Wire-cyan ID, mono numerals, phosphor inset rail on the left edge.",
+      "html": "<table class=\"ds-session-table\"><tbody><tr class=\"ds-session-row ds-session-row--selected\"><td class=\"ds-col-id\">9a3f-b2c4-debug</td><td class=\"ds-col-date\">2026-06-04 09:14</td><td class=\"ds-col-turns\">7</td><td class=\"ds-col-tokens\">12,840</td><td class=\"ds-col-cost\">$0.0241</td></tr><tr class=\"ds-session-row\"><td class=\"ds-col-id\">aa12-7f0e-prod</td><td class=\"ds-col-date\">2026-06-04 08:51</td><td class=\"ds-col-turns\">4</td><td class=\"ds-col-tokens\">5,420</td><td class=\"ds-col-cost\">$0.0103</td></tr></tbody></table>",
+      "css": ".ds-session-table { width: 100%; border-collapse: collapse; background: #0c0c0f; color: #d4d4dc; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-variant-numeric: tabular-nums; } .ds-session-row { border-bottom: 1px solid #2a2a32; cursor: pointer; transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1); } .ds-session-row:hover { background: rgba(224, 160, 64, 0.06); } .ds-session-row--selected { background: rgba(61, 214, 140, 0.06); box-shadow: inset 3px 0 0 #3dd68c; } .ds-session-row td { padding: 8px 12px; white-space: nowrap; } .ds-col-id { color: #58a6ff; max-width: 240px; } .ds-session-row--selected .ds-col-id { color: #3dd68c; } .ds-col-date { color: #a4a4b3; font-size: 12px; } .ds-col-turns { color: #3dd68c; text-align: right; } .ds-col-tokens { color: #3dd68c; text-align: right; font-size: 12px; } .ds-col-cost { color: #e0a040; text-align: right; }"
+    },
+    {
+      "name": "Workflow Node (selected)",
+      "kind": "card",
+      "refersTo": "workflow-node",
+      "description": "Graph node showing one step of the agent workflow. Role-color left stripe encodes kind; selected state glows in the role color.",
+      "html": "<button class=\"ds-wf-node ds-wf-node--agent ds-wf-node--selected\"><div class=\"ds-wf-node__header\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" aria-hidden=\"true\"><circle cx=\"6\" cy=\"6\" r=\"4\" fill=\"#3dd68c\"/></svg><span>agent_planner</span><span class=\"ds-wf-node__span-name\">LangGraph.invoke</span></div><div class=\"ds-wf-node__meta\"><span class=\"ds-wf-node__model\">claude-sonnet-4-6</span><span class=\"ds-wf-node__dur\">2.8s</span><span class=\"ds-wf-node__tokens\">3,240</span></div></button>",
+      "css": ".ds-wf-node { display: block; width: 280px; text-align: left; border: 1px solid #2a2a32; border-left: 3px solid #3dd68c; padding: 10px 16px; min-width: 220px; cursor: pointer; font-family: Geist, Inter, system-ui, sans-serif; font-size: 13px; color: #d4d4dc; background: #16161d; border-radius: 6px; transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s; } .ds-wf-node:hover { transform: translateY(-2px); background: #1a1a20; } .ds-wf-node:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; } .ds-wf-node--selected { box-shadow: 0 0 0 1px #3dd68c, 0 4px 12px rgba(61, 214, 140, 0.15); } .ds-wf-node__header { display: flex; align-items: center; gap: 6px; font-weight: 700; margin-bottom: 4px; color: #d4d4dc; } .ds-wf-node__span-name { color: #a4a4b3; font-size: 11px; font-weight: 400; } .ds-wf-node__meta { display: flex; gap: 10px; font-size: 11px; color: #a4a4b3; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; } .ds-wf-node__model { color: #a4a4b3; } .ds-wf-node__dur { color: #e0a040; } .ds-wf-node__tokens { color: #3dd68c; }"
+    },
+    {
+      "name": "Tool Decision Badges",
+      "kind": "chip",
+      "refersTo": "tool-decision-accept",
+      "description": "Inline badges signaling the agent's decision on a tool invocation. One badge per decision per row.",
+      "html": "<div class=\"ds-decision-row\"><span class=\"ds-decision ds-decision--accept\">ACCEPT</span><span class=\"ds-decision ds-decision--block\">BLOCK</span><span class=\"ds-decision ds-decision--unknown\">UNKNOWN</span></div>",
+      "css": ".ds-decision-row { display: flex; gap: 8px; background: #0c0c0f; padding: 16px; } .ds-decision { display: inline-block; padding: 1px 8px; font-family: Geist, Inter, system-ui, sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; border-radius: 4px; } .ds-decision--accept { background: rgba(61, 214, 140, 0.15); color: #3dd68c; border: 1px solid #3dd68c; } .ds-decision--block { background: rgba(229, 83, 75, 0.15); color: #e5534b; border: 1px solid #e5534b; } .ds-decision--unknown { background: rgba(82, 82, 94, 0.3); color: #a4a4b3; border: 1px solid #a4a4b3; }"
+    },
+    {
+      "name": "HUD Bar",
+      "kind": "nav",
+      "refersTo": "hud-cell",
+      "description": "Top status strip above the dashboard. Each cell carries a tracked uppercase label + a mono value in the appropriate role color.",
+      "html": "<div class=\"ds-hud\"><div class=\"ds-hud__cell\"><span class=\"ds-hud__label\">SESSION</span><span class=\"ds-hud__value\">9a3f-b2c4-debug</span></div><div class=\"ds-hud__cell\"><span class=\"ds-hud__label\">TURN</span><span class=\"ds-hud__counter\">3/7</span></div><div class=\"ds-hud__cell\"><span class=\"ds-hud__label\">TOKENS</span><span class=\"ds-hud__value\">&darr;8,120 &uarr;4,720</span></div><div class=\"ds-hud__cell\"><span class=\"ds-hud__label\">DURATION</span><span class=\"ds-hud__value\">12.4s</span></div></div>",
+      "css": ".ds-hud { display: flex; background: #16161d; border-bottom: 1px solid #2a2a32; backdrop-filter: blur(8px); } .ds-hud__cell { padding: 8px 16px; font-size: 13px; letter-spacing: 0.06em; display: flex; align-items: center; gap: 8px; } .ds-hud__cell + .ds-hud__cell { border-left: 1px solid #2a2a32; } .ds-hud__label { color: #c8c8d4; font-family: Geist, Inter, system-ui, sans-serif; font-weight: 500; font-size: 11px; letter-spacing: 0.08em; } .ds-hud__value { color: #58a6ff; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; } .ds-hud__counter { color: #e0a040; font-weight: 700; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Session Tabs",
+      "kind": "nav",
+      "refersTo": "session-tab",
+      "description": "Framework filter tabs above the session table. Active tab cuts through the bottom border and counts badge in amber.",
+      "html": "<div class=\"ds-tabs\"><button class=\"ds-tab ds-tab--active\">ALL <span class=\"ds-tab__count\">142</span></button><button class=\"ds-tab\">LANGCHAIN <span class=\"ds-tab__count\">88</span></button><button class=\"ds-tab\">ANTHROPIC <span class=\"ds-tab__count\">54</span></button></div>",
+      "css": ".ds-tabs { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid #2a2a32; background: #16161d; } .ds-tab { background: transparent; color: #a4a4b3; border: 1px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; padding: 6px 14px 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.08em; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; transition: color 160ms ease, background 160ms ease, border-color 160ms ease; position: relative; top: 1px; } .ds-tab:hover { color: #c8c8d4; background: rgba(224, 160, 64, 0.04); } .ds-tab--active { color: #e0a040; background: #0c0c0f; border-color: #2a2a32; } .ds-tab__count { color: #a4a4b3; font-size: 11px; padding: 1px 6px; border: 1px solid #2a2a32; border-radius: 8px; } .ds-tab--active .ds-tab__count { color: #e0a040; border-color: #e0a040; }"
+    },
+    {
+      "name": "Panel Stepper",
+      "kind": "button",
+      "refersTo": "panel-stepper",
+      "description": "Small mono caret button for expanding/collapsing sidebars. The HUD's interaction primitive.",
+      "html": "<div class=\"ds-stepper-row\"><button class=\"ds-stepper\">&laquo;</button><button class=\"ds-stepper\">&raquo;</button><button class=\"ds-stepper\" aria-disabled=\"true\">&raquo;</button></div>",
+      "css": ".ds-stepper-row { display: inline-flex; gap: 4px; background: #16161d; padding: 12px; border-radius: 6px; } .ds-stepper { background: transparent; border: 1px solid #2a2a32; color: #c8c8d4; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 4px; cursor: pointer; transition: color 160ms ease, border-color 160ms ease, background 160ms ease, transform 120ms ease; } .ds-stepper:hover { color: #e0a040; border-color: #e0a040; background: rgba(224, 160, 64, 0.06); } .ds-stepper:active { transform: scale(0.94); } .ds-stepper[aria-disabled=\"true\"] { opacity: 0.3; cursor: not-allowed; } .ds-stepper[aria-disabled=\"true\"]:hover { color: #c8c8d4; border-color: #2a2a32; background: transparent; }"
+    },
+    {
+      "name": "Cascade Node (LLM)",
+      "kind": "card",
+      "refersTo": "cascade-node",
+      "description": "One step in the agent's cascade of LLM calls / tool uses / hook events. Border in the kind's role color.",
+      "html": "<div class=\"ds-cascade\"><div class=\"ds-cascade__node ds-cascade__node--llm\"><div class=\"ds-cascade__header\"><span class=\"ds-cascade__name\">claude-sonnet-4-6</span><span class=\"ds-cascade__dur\">1.4s</span></div><div class=\"ds-cascade__meta\">in 1,240 &middot; out 380 &middot; stop: tool_use</div><div class=\"ds-cascade__input\">List files in src/components/</div><div class=\"ds-cascade__output\">&rarr; calling tool: list_dir(path=\"src/components/\")</div></div></div>",
+      "css": ".ds-cascade { background: #0c0c0f; padding: 20px; font-family: 'JetBrains Mono', monospace; } .ds-cascade__node { background: #16161d; padding: 6px 8px; border: 1px solid #3dd68c; border-radius: 4px; color: #d4d4dc; max-width: 480px; font-size: 12px; } .ds-cascade__node--llm { border-color: #3dd68c; } .ds-cascade__header { display: flex; justify-content: space-between; gap: 16px; font-weight: 700; } .ds-cascade__name { color: #3dd68c; } .ds-cascade__dur { color: #e0a040; font-variant-numeric: tabular-nums; } .ds-cascade__meta { color: #a4a4b3; font-size: 11px; margin-top: 3px; } .ds-cascade__input { color: #e0a040; font-size: 12px; margin-top: 4px; } .ds-cascade__output { color: #a4a4b3; font-size: 12px; margin-top: 4px; border-top: 1px solid #2a2a32; padding-top: 4px; }"
+    },
+    {
+      "name": "Panel Rail (collapsed)",
+      "kind": "custom",
+      "refersTo": "panel-rail",
+      "description": "Vertical rail label shown when a sidebar is collapsed. The widest tracking in the system; the only writing-mode rotation.",
+      "html": "<aside class=\"ds-rail\"><button class=\"ds-rail__expand\">&laquo;</button><span class=\"ds-rail__label\">SYSTEM PROMPT</span></aside>",
+      "css": ".ds-rail { width: 40px; height: 320px; background: #16161d; border-right: 1px solid #2a2a32; padding: 8px 4px; display: flex; flex-direction: column; align-items: center; gap: 8px; } .ds-rail__expand { background: transparent; border: 1px solid #2a2a32; color: #c8c8d4; font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 3px 7px; border-radius: 4px; cursor: pointer; } .ds-rail__expand:hover { color: #e0a040; border-color: #e0a040; background: rgba(224, 160, 64, 0.06); } .ds-rail__label { writing-mode: vertical-rl; transform: rotate(180deg); color: #c8c8d4; font-family: Geist, Inter, system-ui, sans-serif; font-size: 11px; font-weight: 500; letter-spacing: 0.22em; text-transform: uppercase; margin-top: 10px; user-select: none; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Forensic Console",
+    "overview": "agentObserve is the instrument an engineer sits at when something went wrong inside an agent run, and stays at when the run finished but the cost or the latency didn't match expectations. The visual system is built around that posture: an operator examining preserved evidence, not a dashboard performing for stakeholders. Every span is preserved, every token is a number you can read, every decision carries its semantic role in color, but the color is muted enough that you can stare at it for an hour without flinching.\n\nThe system commits to a terminal HUD aesthetic — off-black surfaces, mono numerals, panel-rail labels, semantic role colors borrowed from phosphor displays and indicator lamps. The commitment is forensic, not theatrical: the dungeon/terminal scaffolding is voice, not costume. CRT scanlines and decorative ASCII art are tolerated only when they sharpen rather than soften reading the data. The system explicitly rejects gamification, legacy enterprise observability, generic SaaS dashboard chrome, and pure roguelike pastiche.",
+    "keyCharacteristics": [
+      "Off-black surface, near-monochrome with five role colors (phosphor green, sodium amber, wire cyan, halt red, hook purple) — each color carries one meaning and no decoration.",
+      "Geist Sans + JetBrains Mono pair. Mono for everything that is data; sans for labels, headers, and prose.",
+      "Phosphor glow for elevation. No drop shadows. Depth is emission.",
+      "Mono numerals throughout (font-variant-numeric: tabular-nums). Numbers align in columns by default.",
+      "Dense, calm, scannable. 12-13px typography for data tables. Long sessions are the use case.",
+      "Panel-rail HUD vocabulary: collapsed sidebars become vertical rail labels, not hamburger toggles."
+    ],
+    "rules": [
+      { "name": "The One-Meaning Rule", "body": "Each of the five role colors carries exactly one meaning across the entire app. Phosphor is operational, Amber is attention, Wire is identity, Halt is error, Hook is meta. If a new state needs a color, find an existing role that fits — do not invent a sixth accent.", "section": "colors" },
+      { "name": "The 10% Rule", "body": "On any one screen, the combined ink of the five role colors should not exceed ~10% of the visible area. Most pixels are off-black, console-steel, and neutral text. Role colors earn their visibility by being rare.", "section": "colors" },
+      { "name": "The No-Decoration Rule", "body": "Color never communicates personality, mood, or brand warmth. If a color is on the page, it is reporting state. Decorative tinted backgrounds (warm-cream, paper, sand) are categorically banned.", "section": "colors" },
+      { "name": "The Two-Family Rule", "body": "Geist and JetBrains Mono are the entire type system. No third typeface. Hierarchy comes from weight, size, and the sans-vs-mono switch.", "section": "typography" },
+      { "name": "The Mono-For-Data Rule", "body": "If a value is a number, an ID, a duration, a token count, a JSON payload, or a path, it is JetBrains Mono with font-variant-numeric: tabular-nums. No exceptions.", "section": "typography" },
+      { "name": "The Short-Label Rule", "body": "Uppercase tracked labels are reserved for <=4-word labels and HUD eyebrows. Sentences and prose stay in sentence case; uppercase body text is forbidden.", "section": "typography" },
+      { "name": "The No-Shadow Rule", "body": "Drop shadows are banned. box-shadow is used only for inset/outline rings on selected states and the colored emission halos. If a new component needs depth, layer it in surface tone and add a 1px rule, not a shadow.", "section": "elevation" },
+      { "name": "The Glow-Equals-State Rule", "body": "A glow on the page means a state is active. Glow is never decorative. If something glows that the user didn't select or activate, that is a bug.", "section": "elevation" },
+      { "name": "The Phosphor-Glow Selection Rule", "body": "Selected state on any component uses a colored ring + halo in that component's role color. Not a background fill, not a check mark, not an underline. If a component needs a selected state, it glows.", "section": "components" },
+      { "name": "The Tabular-Numeral Rule", "body": "Every cell that holds a number must use font-variant-numeric: tabular-nums. Columns of numbers that don't line up are a quality bug.", "section": "components" }
+    ],
+    "dos": [
+      "Do keep the dungeon/terminal scaffolding (mono numerals, off-black, panel-rail vocabulary, phosphor accents). It is the project's voice; do not soften it toward generic SaaS-dark.",
+      "Do use mono (JetBrains Mono) with font-variant-numeric: tabular-nums for every numeric value, ID, timestamp, JSON payload, or path.",
+      "Do convey state with the role colors at low opacity backgrounds (6% / 15%) and full-opacity text/borders. The tool-decision badges are the canonical example.",
+      "Do convey depth with tonal layering (off-black -> console-steel -> iron) and 1px rule borders. Reach for box-shadow only for selection glows.",
+      "Do put uppercase tracked labels on HUD cells, panel headers, and column heads — written uppercase, <=4 words, never text-transform: uppercase on body content.",
+      "Do test new screens at hour three of a long debugging session. If a color or motion gets tiring, it is wrong.",
+      "Do treat the user as the expert. Surface SESSION, TURN, STOP REASON, MODEL directly; never paraphrase OTEL/SDK vocabulary into friendlier words."
+    ],
+    "donts": [
+      "Don't introduce a sixth role color. Phosphor / Amber / Wire / Halt / Hook is the full palette.",
+      "Don't use drop shadows. Depth = tonal layering + 1px borders + phosphor glow for selection.",
+      "Don't use gradient text (background-clip: text + gradient background) anywhere.",
+      "Don't add glassmorphism / backdrop-filter beyond the single existing blur on the HUD.",
+      "Don't add border-left as a colored stripe on new cards or callouts. The pattern exists only where the stripe encodes semantic type.",
+      "Don't introduce warm-tinted neutrals (cream, paper, sand, parchment).",
+      "Don't add a third font family. Geist + JetBrains Mono is the system.",
+      "Don't gamify. No XP, no confetti, no mascot, no 'Great job!' toasts.",
+      "Don't clutter for completeness. Each cell on the page exists because it surfaces a span / token / cost / decision the user couldn't see otherwise.",
+      "Don't reach for generic SaaS chrome (indigo+slate, cards-with-icons grids, Stripe-style charts).",
+      "Don't lean into the dungeon-crawler metaphor. Turns are turns, sessions are sessions, nodes are nodes.",
+      "Don't use em dashes in UI copy or labels.",
+      "Don't use uppercase body text. Uppercase is reserved for <=4-word labels and HUD eyebrows.",
+      "Don't pair similar fonts. Adding Inter, IBM Plex Sans, or any other humanist sans is forbidden.",
+      "Don't animate layout properties (width, height, top, left). Use transform / opacity / box-shadow."
+    ]
+  }
+}

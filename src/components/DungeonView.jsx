@@ -28,10 +28,59 @@ function resolveGraphState(currentNode, currentGroupIdx, newGraph) {
   return { groupIdx: Math.min(currentGroupIdx, newGraph.groups.length - 1), nodeIdx: 0 };
 }
 
-function SystemPromptPanel({ prompt, label }) {
+const SIDEBAR_MODES = ['collapsed', 'default', 'wide'];
+
+function stepSidebarMode(mode, delta) {
+  const i = SIDEBAR_MODES.indexOf(mode);
+  const next = Math.max(0, Math.min(SIDEBAR_MODES.length - 1, i + delta));
+  return SIDEBAR_MODES[next];
+}
+
+function PanelHeader({ label, mode, onStep, side = 'left' }) {
+  const atMin = mode === 'collapsed';
+  const atMax = mode === 'wide';
+  // Arrows always point in their literal direction; the *meaning* flips for the
+  // right-side panel because "grow" there means expanding leftward (into the
+  // workspace) and "shrink" means collapsing rightward (toward the wall).
+  const shrinkGlyph = side === 'right' ? '»' : '«';
+  const growGlyph   = side === 'right' ? '«' : '»';
+  // Visual order also flips so the "into the workspace" arrow sits closer to
+  // the workspace edge on both sides.
+  const buttons = [
+    <button
+      key="shrink"
+      type="button"
+      className="panel-stepper panel-stepper--shrink"
+      aria-label={`Shrink ${label}`}
+      aria-disabled={atMin}
+      title="Shrink panel"
+      onClick={() => { if (!atMin) onStep(-1); }}
+    >{shrinkGlyph}</button>,
+    <button
+      key="grow"
+      type="button"
+      className="panel-stepper panel-stepper--grow"
+      aria-label={`Expand ${label}`}
+      aria-disabled={atMax}
+      title="Expand panel"
+      onClick={() => { if (!atMax) onStep(+1); }}
+    >{growGlyph}</button>,
+  ];
+  return (
+    <div className="panel-header">
+      <span className="panel-rail">{label}</span>
+      <span className="panel-header__label">{label}</span>
+      <span className="panel-header__steppers">
+        {side === 'right' ? [buttons[1], buttons[0]] : buttons}
+      </span>
+    </div>
+  );
+}
+
+function SystemPromptPanel({ prompt, label, mode, onStep }) {
   return (
     <div className="sysprompt-panel">
-      <div className="sysprompt-panel__header">{label}</div>
+      <PanelHeader label={label} mode={mode} onStep={onStep} />
       <div className="sysprompt-panel__body">
         {prompt || (
           <span className="sysprompt-panel__empty">
@@ -118,7 +167,7 @@ function TurnIOPanel({ turn }) {
   );
 }
 
-function ToolDirectorySidebar({ tools, emptyState, nodeName }) {
+function ToolDirectorySidebar({ tools, emptyState, nodeName, mode, onStep }) {
   const [expanded, setExpanded] = useState(null);
   // Expand state for nested schema rows — keyed by dot-path so each level
   // is independent. Generic over any JSON Schema shape.
@@ -149,35 +198,25 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName }) {
   function renderRow(name, prop, required, path) {
     const expandable = hasChildren(prop);
     const open = openPaths.has(path);
-    const descPath = `${path}:desc`;
-    const descOpen = openPaths.has(descPath);
     return (
       <div key={path} className="tool-schema__row">
         <div
           className={`tool-schema__row-top${expandable ? ' tool-schema__row-top--clickable' : ''}`}
           onClick={expandable ? () => togglePath(path) : undefined}
         >
-          {expandable && (
-            <span className="tool-schema__chevron">{open ? '▾' : '▸'}</span>
-          )}
+          <span className="tool-schema__chevron" aria-hidden="true">
+            {expandable ? (open ? '▾' : '▸') : ''}
+          </span>
           <span className="tool-schema__param">{name}</span>
-          <span className="tool-schema__type">{typeLabel(prop)}</span>
-          <span className={required ? 'tool-schema__req' : 'tool-schema__opt'}>
-            {required ? 'req' : 'opt'}
+          <span className="tool-schema__meta">
+            <span className="tool-schema__type">{typeLabel(prop)}</span>
+            <span className={required ? 'tool-schema__req' : 'tool-schema__opt'}>
+              {required ? 'req' : 'opt'}
+            </span>
           </span>
         </div>
         {prop.description && (
-          <>
-            <div
-              className="tool-schema__desc-toggle"
-              onClick={(e) => { e.stopPropagation(); togglePath(descPath); }}
-            >
-              {descOpen ? '▾ description' : '▸ description'}
-            </div>
-            {descOpen && (
-              <div className="tool-schema__desc">{prop.description}</div>
-            )}
-          </>
+          <div className="tool-schema__desc">{prop.description}</div>
         )}
         {expandable && open && (
           <div className="tool-schema__nested">
@@ -203,7 +242,7 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName }) {
 
   return (
     <div className="tool-sidebar">
-      <div className="tool-sidebar__header">TOOLS [{tools.length}]</div>
+      <PanelHeader label={`TOOLS [${tools.length}]`} mode={mode} onStep={onStep} side="right" />
       {emptyState === 'llm'
         ? <div className="tool-sidebar__empty-state">
             <span className="tool-sidebar__empty-label">{nodeName || 'LLM'}</span>
@@ -224,24 +263,17 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName }) {
                 </div>
                 {expanded === i && (
                   <div className="tool-schema">
-                    {t.description && (() => {
-                      const toolDescPath = `__tool_desc:${t.name}`;
-                      const toolDescOpen = openPaths.has(toolDescPath);
-                      return (
-                        <>
-                          <div
-                            className="tool-schema__desc-toggle"
-                            onClick={() => togglePath(toolDescPath)}
-                          >
-                            {toolDescOpen ? '▾ description' : '▸ description'}
-                          </div>
-                          {toolDescOpen && (
-                            <div className="tool-schema__desc-header">{t.description}</div>
-                          )}
-                        </>
-                      );
-                    })()}
-                    {renderSchema(t.inputSchema)}
+                    {t.description && (
+                      <div className="tool-schema__desc-header">{t.description}</div>
+                    )}
+                    {t.inputSchema && Object.keys(t.inputSchema.properties || {}).length > 0 && (
+                      <>
+                        <div className="tool-schema__eyebrow">PARAMETERS</div>
+                        <div className="tool-schema__params">
+                          {renderSchema(t.inputSchema)}
+                        </div>
+                      </>
+                    )}
                     {t.inputSchema && Object.keys(t.inputSchema.properties || {}).length === 0 && (
                       <div className="tool-schema__empty">no parameters</div>
                     )}
@@ -294,6 +326,30 @@ export function DungeonView({ sessionId, onExit }) {
   // from selectedNode; sub-agent zooms layer on top in subAgentStack.
   const [detailMode, setDetailMode] = useState(false);
   const [subAgentStack, setSubAgentStack] = useState([]);
+  const [sysMode, setSysMode] = useState(() => {
+    if (typeof window === 'undefined') return 'default';
+    const stored = window.localStorage.getItem('ao.sysprompt.mode');
+    return SIDEBAR_MODES.includes(stored) ? stored : 'default';
+  });
+  const [toolsMode, setToolsMode] = useState(() => {
+    if (typeof window === 'undefined') return 'default';
+    const stored = window.localStorage.getItem('ao.tools.mode');
+    return SIDEBAR_MODES.includes(stored) ? stored : 'default';
+  });
+
+  useEffect(() => {
+    try { window.localStorage.setItem('ao.sysprompt.mode', sysMode); } catch {}
+  }, [sysMode]);
+  useEffect(() => {
+    try { window.localStorage.setItem('ao.tools.mode', toolsMode); } catch {}
+  }, [toolsMode]);
+
+  const stepSys = useCallback((delta) => {
+    setSysMode((m) => stepSidebarMode(m, delta));
+  }, []);
+  const stepTools = useCallback((delta) => {
+    setToolsMode((m) => stepSidebarMode(m, delta));
+  }, []);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -394,8 +450,13 @@ export function DungeonView({ sessionId, onExit }) {
   );
 
   return (
-    <div className="dungeon-view">
-      <SystemPromptPanel prompt={leftPrompt} label={leftLabel} />
+    <div className="dungeon-view" data-sysprompt={sysMode} data-tools={toolsMode}>
+      <SystemPromptPanel
+        prompt={leftPrompt}
+        label={leftLabel}
+        mode={sysMode}
+        onStep={stepSys}
+      />
       <HUD
         sessionId={sessionId}
         turnIdx={turnIdx}
@@ -447,8 +508,18 @@ export function DungeonView({ sessionId, onExit }) {
         }
       </div>
       {isLLMNode
-        ? <ToolDirectorySidebar tools={[]} emptyState="llm" nodeName={selectedNode?.label} />
-        : <ToolDirectorySidebar tools={session?.availableTools || []} />
+        ? <ToolDirectorySidebar
+            tools={[]}
+            emptyState="llm"
+            nodeName={selectedNode?.label}
+            mode={toolsMode}
+            onStep={stepTools}
+          />
+        : <ToolDirectorySidebar
+            tools={session?.availableTools || []}
+            mode={toolsMode}
+            onStep={stepTools}
+          />
       }
       <TimelineBar
         turns={turns}

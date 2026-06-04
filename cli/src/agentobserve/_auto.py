@@ -1,8 +1,29 @@
 import atexit
 import os
+from pathlib import Path
+
+# Default staging dir for raw API bodies (Claude Code CLI file mode).
+# Inline mode (OTEL_LOG_RAW_API_BODIES=1) truncates bodies at 60 KB and strips
+# the trailing `tools` array off every multi-turn request, so the dashboard
+# loses tool descriptions and input schemas. File mode writes untruncated
+# bodies to this dir; the OTEL receiver moves them per-session on arrival.
+_DEFAULT_BODY_DIR = "/tmp/agentobserve_bodies"
+
+
+def _configure_raw_body_mode():
+    """If Claude Code telemetry is on and the user hasn't picked a body mode,
+    default to file mode so tool definitions survive the 60 KB inline cap."""
+    if not os.environ.get("CLAUDE_CODE_ENABLE_TELEMETRY"):
+        return
+    if os.environ.get("OTEL_LOG_RAW_API_BODIES"):
+        return  # user already chose a mode — don't override
+    Path(_DEFAULT_BODY_DIR).mkdir(parents=True, exist_ok=True)
+    os.environ["OTEL_LOG_RAW_API_BODIES"] = f"file:{_DEFAULT_BODY_DIR}"
 
 
 def setup():
+    _configure_raw_body_mode()
+
     # Skip if a TracerProvider is already configured (e.g. opentelemetry-instrument CLI)
     from opentelemetry import trace
     if not isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider):
@@ -35,8 +56,15 @@ def setup():
         _load_instrumentors(provider)
 
     # 3. Create root session span + propagate TRACEPARENT for subprocesses
-    # Skip root span for LangChain — LangSmith manages its own hierarchy
+    # Skip root span for LangChain — LangSmith manages its own hierarchy.
+    # Also register the LangChain tool-definitions callback so bound tools land
+    # on LLM spans (LangSmith's OTEL exporter doesn't emit them itself).
     if os.environ.get("LANGSMITH_OTEL_ONLY"):
+        try:
+            from ._langchain_handler import register_tool_definitions_handler
+            register_tool_definitions_handler()
+        except Exception:
+            pass
         return
 
     tracer = provider.get_tracer("agentobserve")

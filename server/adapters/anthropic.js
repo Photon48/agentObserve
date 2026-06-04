@@ -3,6 +3,31 @@ import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendan
 
 export const FRAMEWORK = 'anthropic-sdk';
 
+// Spans that only appear when an outer Python SDK wraps the CLI:
+//   - `agentobserve.session`: emitted by agentobserve's bootstrap when imported
+//     from a Python process (claude-agent-sdk path).
+//   - `anthropic.chat`: emitted by opentelemetry-instrumentation-anthropic when
+//     the user code calls the Anthropic Python SDK directly.
+//   - `weverse.pipeline`: demo-specific outer orchestrator span.
+// A direct `claude` CLI invocation emits `claude_code.interaction` but none of
+// these — that's what distinguishes it from the SDK.
+const SDK_MARKER_SPANS = new Set([
+  'agentobserve.session',
+  'anthropic.chat',
+  'weverse.pipeline',
+]);
+
+function hasSdkMarkers(rawData, orphanSpans = []) {
+  if (rawData.sdkCapture) return true;
+  for (const s of rawData.spans || []) {
+    if (SDK_MARKER_SPANS.has(s.name)) return true;
+  }
+  for (const s of orphanSpans) {
+    if (SDK_MARKER_SPANS.has(s.name)) return true;
+  }
+  return false;
+}
+
 export function canHandle(rawData) {
   return rawData.spans?.some((s) => s.name === 'claude_code.interaction') ?? false;
 }
@@ -135,51 +160,83 @@ export function buildSession(sessionId, raw, orphanSpans = []) {
     totalOutputTokens += turn.totalOutputTokens;
   }
 
-  // Extract available tools from request bodies (deduplicated by name)
+  // Collect available tools from every observation path through a merge that
+  // prefers richer data (non-empty description, non-null inputSchema).
   const availableTools = [];
-  const toolNamesSeen = new Set();
+  const toolIndex = new Map();
+  function mergeTool({ name, description, inputSchema }) {
+    if (!name) return;
+    const existing = toolIndex.get(name);
+    if (!existing) {
+      const entry = { name, description: description || '', inputSchema: inputSchema || null };
+      toolIndex.set(name, entry);
+      availableTools.push(entry);
+      return;
+    }
+    if (!existing.description && description) existing.description = description;
+    if (!existing.inputSchema && inputSchema) existing.inputSchema = inputSchema;
+  }
+
+  // Primary: OTEL gen_ai.tool.definitions on anthropic.chat spans emitted by
+  // opentelemetry-instrumentation-anthropic. Standard GenAI semantic convention.
+  for (const span of spans) {
+    if (span.name !== 'anthropic.chat') continue;
+    const defs = getAttr(span.attributes, 'gen_ai.tool.definitions');
+    if (!defs) continue;
+    try {
+      const arr = JSON.parse(defs);
+      if (!Array.isArray(arr)) continue;
+      for (const t of arr) {
+        mergeTool({
+          name: t.name,
+          description: t.description || '',
+          inputSchema: t.input_schema || t.inputSchema || null,
+        });
+      }
+    } catch {}
+  }
+
+  // Claude Code CLI path: raw request bodies expose the full Anthropic tools array.
   for (const reqBody of Object.values(requestBodies)) {
     for (const tool of reqBody.tools || []) {
-      if (!toolNamesSeen.has(tool.name)) {
-        toolNamesSeen.add(tool.name);
-        availableTools.push({
-          name: tool.name,
-          description: tool.description || '',
-          inputSchema: tool.input_schema || null,
-        });
+      mergeTool({
+        name: tool.name,
+        description: tool.description || '',
+        inputSchema: tool.input_schema || null,
+      });
+    }
+  }
+
+  // Name-only fallback: tools observed via actual usage. Never demotes a richer entry.
+  for (const turn of turns) {
+    const agentStep = turn.steps?.find((s) => s.type === 'AGENT');
+    for (const block of agentStep?.capturedBlocks || []) {
+      if (block.type === 'TOOL_USE') {
+        mergeTool({ name: block.name, description: '', inputSchema: null });
+      }
+    }
+    for (const node of agentStep?.nodes || []) {
+      if (node.kind === 'LLM_CALL') {
+        for (const block of node.blocks || []) {
+          if (block.type === 'TOOL_USE') {
+            mergeTool({ name: block.name, description: '', inputSchema: null });
+          }
+        }
+      } else if (node.kind === 'TOOL' && node.toolName) {
+        mergeTool({ name: node.toolName, description: '', inputSchema: null });
       }
     }
   }
 
-  // Fallback: collect unique tool names from TOOL_USE blocks and TOOL nodes
-  if (availableTools.length === 0) {
-    for (const turn of turns) {
-      const agentStep = turn.steps?.find((s) => s.type === 'AGENT');
-      for (const block of agentStep?.capturedBlocks || []) {
-        if (block.type === 'TOOL_USE' && !toolNamesSeen.has(block.name)) {
-          toolNamesSeen.add(block.name);
-          availableTools.push({ name: block.name, description: '', inputSchema: null });
-        }
-      }
-      for (const node of agentStep?.nodes || []) {
-        if (node.kind === 'LLM_CALL') {
-          for (const block of node.blocks || []) {
-            if (block.type === 'TOOL_USE' && !toolNamesSeen.has(block.name)) {
-              toolNamesSeen.add(block.name);
-              availableTools.push({ name: block.name, description: '', inputSchema: null });
-            }
-          }
-        } else if (node.kind === 'TOOL' && node.toolName && !toolNamesSeen.has(node.toolName)) {
-          toolNamesSeen.add(node.toolName);
-          availableTools.push({ name: node.toolName, description: '', inputSchema: null });
-        }
-      }
-    }
-  }
+  // The CLI binary and the Python SDK both emit `claude_code.interaction`
+  // spans, so canHandle() catches both. Distinguish them here: only label
+  // as the SDK when an outer-orchestrator marker is present; otherwise this
+  // was a direct `claude` CLI run.
+  const framework = hasSdkMarkers(raw, matchedOrphans) ? FRAMEWORK : 'claude-code-cli';
 
   const session = {
     id: sessionId,
-    framework: FRAMEWORK,
+    framework,
     startTime: nanoToDate(firstSpan.startTimeUnixNano).toISOString(),
     endTime: nanoToDate(lastSpan.endTimeUnixNano).toISOString(),
     turnCount: turns.length,

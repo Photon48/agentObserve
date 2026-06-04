@@ -155,7 +155,7 @@ Add an `"env"` block to **either** of:
     "OTEL_LOG_USER_PROMPTS": "1",
     "OTEL_LOG_TOOL_DETAILS": "1",
     "OTEL_LOG_TOOL_CONTENT": "1",
-    "OTEL_LOG_RAW_API_BODIES": "1"
+    "OTEL_LOG_RAW_API_BODIES": "file:/tmp/agentobserve_bodies"
   }
 }
 ```
@@ -166,7 +166,7 @@ Restart Claude Code. Traces flow into `telemetry/<session_id>/` automatically.
 
 **Required vars:** the three `*_EXPORTER=otlp` lines. Without them the CLI collects telemetry but exports nothing.
 
-**Optional vars (richer traces):** `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT`, `OTEL_LOG_RAW_API_BODIES`. The last one is what surfaces sub-agent traces, thoughts, and full tool I/O (`capturedBlocks`) in the dashboard — without it you get span timings but no rich block-level detail.
+**Optional vars (richer traces):** `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT`, `OTEL_LOG_RAW_API_BODIES`. The last one is what surfaces sub-agent traces, thoughts, and full tool I/O (`capturedBlocks`) in the dashboard — without it you get span timings but no rich block-level detail. Use the `file:<dir>` form: the CLI caps inline bodies at 60 KB, which truncates the `tools` array off the end of every multi-turn request (no tool descriptions or schemas in the UI). File mode writes untruncated bodies to disk and the receiver moves them into `telemetry/<session>/api_bodies/`.
 
 ### Optional: Richer Telemetry (Claude Agent SDK)
 
@@ -176,7 +176,7 @@ For SDK users, the same `OTEL_LOG_*` vars apply — set them alongside the other
 export OTEL_LOG_USER_PROMPTS=1
 export OTEL_LOG_TOOL_DETAILS=1
 export OTEL_LOG_TOOL_CONTENT=1
-export OTEL_LOG_RAW_API_BODIES=1
+export OTEL_LOG_RAW_API_BODIES=file:/tmp/agentobserve_bodies
 ```
 
 ## How It Works

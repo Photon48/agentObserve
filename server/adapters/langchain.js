@@ -395,15 +395,56 @@ export function buildSession(sessionId, raw) {
     }
   }
 
-  // Available tools: deduplicated from execute_tool spans
+  // Available tools: prefer gen_ai.tool.definitions on LLM spans (emitted by
+  // agentobserve's LangChain callback handler), fall back to execute_tool names.
   const availableTools = [];
-  const toolNamesSeen = new Set();
+  const toolIndex = new Map();
+  function mergeTool({ name, description, inputSchema }) {
+    if (!name) return;
+    const existing = toolIndex.get(name);
+    if (!existing) {
+      const entry = { name, description: description || '', inputSchema: inputSchema || null };
+      toolIndex.set(name, entry);
+      availableTools.push(entry);
+      return;
+    }
+    if (!existing.description && description) existing.description = description;
+    if (!existing.inputSchema && inputSchema) existing.inputSchema = inputSchema;
+  }
+
+  for (const span of spans) {
+    // Two paths emit gen_ai.tool.definitions:
+    //   1. langsmith LLM spans (kind=llm or op=chat) — for frameworks that
+    //      land tool definitions on the LLM span itself.
+    //   2. `agentobserve.tool_definitions` helper spans emitted by the
+    //      agentobserve LangChain callback handler. LangSmith creates its
+    //      OTEL spans lazily (outside the OTEL context-var), so the handler
+    //      can't write onto the LLM span directly — instead it opens this
+    //      short-lived sibling span that the loader buckets into the
+    //      session by `session.id`.
+    const kind = getAttr(span.attributes, 'langsmith.span.kind');
+    const op   = getAttr(span.attributes, 'gen_ai.operation.name');
+    const isLlmSpan = kind === 'llm' || op === 'chat';
+    const isHelperSpan = span.name === 'agentobserve.tool_definitions';
+    if (!isLlmSpan && !isHelperSpan) continue;
+    const defs = getAttr(span.attributes, 'gen_ai.tool.definitions');
+    if (!defs) continue;
+    try {
+      const arr = JSON.parse(defs);
+      if (!Array.isArray(arr)) continue;
+      for (const t of arr) {
+        mergeTool({
+          name: t.name,
+          description: t.description || '',
+          inputSchema: t.input_schema || t.inputSchema || null,
+        });
+      }
+    } catch {}
+  }
+
   for (const span of spans) {
     if (getAttr(span.attributes, 'gen_ai.operation.name') === 'execute_tool') {
-      if (!toolNamesSeen.has(span.name)) {
-        toolNamesSeen.add(span.name);
-        availableTools.push({ name: span.name, description: '', inputSchema: null });
-      }
+      mergeTool({ name: span.name, description: '', inputSchema: null });
     }
   }
 

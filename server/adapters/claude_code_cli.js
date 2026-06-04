@@ -118,44 +118,44 @@ export function buildSession(sessionId, raw) {
     totalOutputTokens += turn.totalOutputTokens;
   }
 
-  // Available tools from request bodies
+  // Merge tools from every observation path. A later non-truncated body can
+  // backfill description/schema for a tool whose earlier body got cut off.
   const availableTools = [];
-  const toolNamesSeen = new Set();
+  const toolIndex = new Map();
+  function mergeTool({ name, description, inputSchema }) {
+    if (!name) return;
+    const existing = toolIndex.get(name);
+    if (!existing) {
+      const entry = { name, description: description || '', inputSchema: inputSchema || null };
+      toolIndex.set(name, entry);
+      availableTools.push(entry);
+      return;
+    }
+    if (!existing.description && description) existing.description = description;
+    if (!existing.inputSchema && inputSchema) existing.inputSchema = inputSchema;
+  }
+
   for (const reqBody of Object.values(requestBodies)) {
     for (const tool of reqBody.tools || []) {
-      if (!toolNamesSeen.has(tool.name)) {
-        toolNamesSeen.add(tool.name);
-        availableTools.push({
-          name: tool.name,
-          description: tool.description || '',
-          inputSchema: tool.input_schema || null,
-        });
-      }
+      mergeTool({
+        name: tool.name,
+        description: tool.description || '',
+        inputSchema: tool.input_schema || null,
+      });
     }
   }
 
-  // Fallback: collect tool names from TOOL_USE blocks
-  if (availableTools.length === 0) {
-    for (const turn of turns) {
-      const agentStep = turn.steps?.find((s) => s.type === 'AGENT');
-      for (const block of agentStep?.capturedBlocks || []) {
-        if (block.type === 'TOOL_USE' && !toolNamesSeen.has(block.name)) {
-          toolNamesSeen.add(block.name);
-          availableTools.push({ name: block.name, description: '', inputSchema: null });
-        }
+  // Name-only fallback: tools observed via actual use, never demotes a richer entry.
+  for (const turn of turns) {
+    const agentStep = turn.steps?.find((s) => s.type === 'AGENT');
+    for (const block of agentStep?.capturedBlocks || []) {
+      if (block.type === 'TOOL_USE') {
+        mergeTool({ name: block.name, description: '', inputSchema: null });
       }
     }
-  }
-
-  // Fallback: collect tool names from TOOL nodes
-  if (availableTools.length === 0) {
-    for (const turn of turns) {
-      const agentStep = turn.steps?.find((s) => s.type === 'AGENT');
-      for (const node of agentStep?.nodes || []) {
-        if (node.kind === 'TOOL' && node.toolName && !toolNamesSeen.has(node.toolName)) {
-          toolNamesSeen.add(node.toolName);
-          availableTools.push({ name: node.toolName, description: '', inputSchema: null });
-        }
+    for (const node of agentStep?.nodes || []) {
+      if (node.kind === 'TOOL' && node.toolName) {
+        mergeTool({ name: node.toolName, description: '', inputSchema: null });
       }
     }
   }

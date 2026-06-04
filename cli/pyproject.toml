@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 anthropic = ["opentelemetry-instrumentation-anthropic>=0.50.0"]
-langchain = ["langsmith[otel]>=0.8.0"]
+langchain = ["langsmith[otel]>=0.8.0", "langchain-core>=0.3"]
 openai = ["opentelemetry-instrumentation-openai>=0.50.0"]
 all = ["agentobserve[anthropic,langchain,openai]"]
 
