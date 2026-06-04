@@ -181,6 +181,39 @@ export function detectWorkflowNodeKind(
   return (llmCount >= 2 || hasTool) ? 'AGENT' : 'PIPELINE_MEMBER';
 }
 
+// ── AgentNode-internal classification (recursive depth) ─────────────────────
+//
+// Same algorithm and predicate-injection pattern as detectWorkflowNodeKind,
+// but in the AgentNode vocabulary. Returns 'AGENT' when the subtree under
+// `spanId` looks like a sub-agent invocation, or `null` to mean "no agent
+// structure here — keep the leaf's existing classification (LLM_CALL / TOOL /
+// HOOK)". Adapters call this only to *promote* a span to AGENT-kind; they
+// never call it to decide a leaf's primary kind.
+//
+// Why a separate function from detectWorkflowNodeKind: the return vocabulary
+// differs (no PIPELINE_MEMBER at the AgentStep level), and the call site is
+// inside an already-classified AGENT subtree where the default isn't
+// "pipeline" but "leaf". Sharing the predicate trio (isLLM/isTool/isAgentSpan)
+// keeps the framework-agnostic posture — see the comment block above
+// detectWorkflowNodeKind for the predicate pattern.
+
+export function classifyAgentNodeKind(
+  spanId,
+  childrenOf,
+  isLLM,
+  isTool,
+  isAgentSpan = () => false,
+) {
+  let llmCount = 0;
+  let hasTool = false;
+  for (const d of getDescendants(spanId, childrenOf)) {
+    if (isAgentSpan(d)) return 'AGENT';
+    if (isLLM(d)) llmCount++;
+    if (isTool(d)) { hasTool = true; }
+  }
+  return (llmCount >= 2 || hasTool) ? 'AGENT' : null;
+}
+
 // ── Infer tool schemas from observed inputs ──────────────────────────────────
 //
 // When tool schemas aren't available in the telemetry (no request bodies for

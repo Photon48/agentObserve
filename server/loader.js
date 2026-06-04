@@ -21,13 +21,28 @@ function readJsonFile(filePath) {
   }
 }
 
+// OTEL_LOG_RAW_API_BODIES inline bodies may contain unescaped control characters
+// (literal newlines/tabs inside JSON string values). Sanitize before parsing.
+function safeParseBody(str) {
+  try { return JSON.parse(str); } catch {}
+  try {
+    const sanitized = str.replace(/[\x00-\x1f]/g, (ch) => {
+      if (ch === '\n') return '\\n';
+      if (ch === '\r') return '\\r';
+      if (ch === '\t') return '\\t';
+      return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+    });
+    return JSON.parse(sanitized);
+  } catch { return null; }
+}
+
 export function loadAllSessions(telemetryDir) {
   const rawBySession = {};
   const orphanSpans = [];
 
   function ensureSession(id) {
     if (!rawBySession[id]) {
-      rawBySession[id] = { logs: [], spans: [], metrics: [], requestBodies: {}, responseBodies: {} };
+      rawBySession[id] = { logs: [], spans: [], metrics: [], requestBodies: {}, responseBodies: {}, toolOutputEvents: {} };
     }
     return rawBySession[id];
   }
@@ -35,14 +50,14 @@ export function loadAllSessions(telemetryDir) {
   // Pending body refs: collected during log pass, resolved after
   // { sessionId, requestId, filePath, kind: 'request'|'response' }
   const pendingBodyRefs = [];
+  // Request body logs without request_id — paired with response bodies after loading
+  const pendingReqBodies = [];
 
   const folders = fs.readdirSync(telemetryDir);
 
   for (const folder of folders) {
     const folderPath = path.join(telemetryDir, folder);
     if (!fs.statSync(folderPath).isDirectory()) continue;
-    // Skip the api_bodies directory — it holds raw JSON files, not OTEL exports
-    if (folder === 'api_bodies') continue;
 
     const files = fs.readdirSync(folderPath).filter((f) => f.endsWith('.json'));
 
@@ -74,13 +89,45 @@ export function loadAllSessions(telemetryDir) {
                 const requestId =
                   getAttr(rec.attributes, 'request_id') ||
                   getAttr(rec.attributes, 'client_request_id');
+                const kind = body === 'claude_code.api_request_body' ? 'request' : 'response';
                 if (bodyRef && requestId) {
                   pendingBodyRefs.push({
                     sessionId,
                     requestId,
                     filePath: bodyRef,
-                    kind: body === 'claude_code.api_request_body' ? 'request' : 'response',
+                    kind,
                   });
+                } else if (bodyRef && !requestId && kind === 'request') {
+                  // File-mode request body — no request_id yet, pair later
+                  pendingReqBodies.push({
+                    sessionId,
+                    promptId: getAttr(rec.attributes, 'prompt.id'),
+                    time: rec.timeUnixNano,
+                    bodyRef,
+                  });
+                } else if (!bodyRef) {
+                  // Inline mode: OTEL_LOG_RAW_API_BODIES=1 embeds JSON in an attribute
+                  const inlineBody = getAttr(rec.attributes, 'body');
+                  if (inlineBody && requestId) {
+                    const parsed = safeParseBody(inlineBody);
+                    if (parsed) {
+                      const session = ensureSession(sessionId);
+                      if (kind === 'request') {
+                        session.requestBodies[requestId] = parsed;
+                      } else {
+                        session.responseBodies[requestId] = parsed;
+                      }
+                    }
+                  } else if (inlineBody && !requestId && kind === 'request') {
+                    // Request body logs lack request_id (only known after API responds).
+                    // Collect for pairing with response body logs later.
+                    pendingReqBodies.push({
+                      sessionId,
+                      promptId: getAttr(rec.attributes, 'prompt.id'),
+                      time: rec.timeUnixNano,
+                      body: inlineBody,
+                    });
+                  }
                 }
               }
             }
@@ -92,13 +139,25 @@ export function loadAllSessions(telemetryDir) {
             for (const span of ss.spans || []) {
               const sessionId = getAttr(span.attributes, 'session.id')
                 || getAttr(span.attributes, 'langsmith.trace.session_name');
+              const resolvedSid = (sessionId && sessionId !== 'default') ? sessionId : folder;
               if (!sessionId || sessionId === 'default') {
                 if (span.name === 'anthropic.chat') { orphanSpans.push(span); continue; }
                 // Fallback: use folder name as session ID (e.g. for LangChain data)
                 ensureSession(folder).spans.push(span);
-                continue;
+              } else {
+                ensureSession(sessionId).spans.push(span);
               }
-              ensureSession(sessionId).spans.push(span);
+
+              // Extract tool.output events from spans
+              if (span.events) {
+                for (const ev of span.events) {
+                  if (ev.name === 'tool.output') {
+                    if (rawBySession[resolvedSid]) {
+                      rawBySession[resolvedSid].toolOutputEvents[span.spanId] = ev;
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -124,6 +183,54 @@ export function loadAllSessions(telemetryDir) {
       session.requestBodies[requestId] = parsed;
     } else {
       session.responseBodies[requestId] = parsed;
+    }
+  }
+
+  // Pair request body logs (no request_id) with response body logs by prompt.id + temporal order.
+  // Within a prompt.id, request/response bodies alternate: req₁, resp₁, req₂, resp₂, ...
+  // Response body logs have request_id; we assign the same to the preceding request body.
+  if (pendingReqBodies.length > 0) {
+    // Group response body logs by sessionId + promptId for lookup
+    const respIndex = {}; // "sessionId:promptId" -> [{requestId, time}] sorted by time
+    for (const session of Object.values(rawBySession)) {
+      for (const log of session.logs) {
+        if ((log.body?.stringValue || '') !== 'claude_code.api_response_body') continue;
+        const sid = getAttr(log.attributes, 'session.id');
+        const pid = getAttr(log.attributes, 'prompt.id');
+        const rid = getAttr(log.attributes, 'request_id');
+        if (!sid || !pid || !rid) continue;
+        const key = `${sid}:${pid}`;
+        if (!respIndex[key]) respIndex[key] = [];
+        respIndex[key].push({ requestId: rid, time: log.timeUnixNano });
+      }
+    }
+    for (const arr of Object.values(respIndex)) {
+      arr.sort((a, b) => (BigInt(a.time) < BigInt(b.time) ? -1 : 1));
+    }
+
+    // Sort pending request bodies by sessionId + promptId + time
+    pendingReqBodies.sort((a, b) => {
+      if (a.sessionId !== b.sessionId) return a.sessionId < b.sessionId ? -1 : 1;
+      if (a.promptId !== b.promptId) return a.promptId < b.promptId ? -1 : 1;
+      return BigInt(a.time) < BigInt(b.time) ? -1 : 1;
+    });
+
+    // Pair: for each prompt.id group, the Nth request body matches the Nth response body
+    const reqCounters = {}; // "sessionId:promptId" -> index
+    for (const pending of pendingReqBodies) {
+      const key = `${pending.sessionId}:${pending.promptId}`;
+      const idx = reqCounters[key] || 0;
+      reqCounters[key] = idx + 1;
+      const respArr = respIndex[key];
+      if (!respArr || idx >= respArr.length) continue;
+      const requestId = respArr[idx].requestId;
+      const parsed = pending.bodyRef
+        ? readJsonFile(pending.bodyRef)
+        : safeParseBody(pending.body);
+      if (parsed) {
+        const session = rawBySession[pending.sessionId];
+        if (session) session.requestBodies[requestId] = parsed;
+      }
     }
   }
 

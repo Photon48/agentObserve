@@ -160,15 +160,19 @@ The `[anthropic]` extra installs `opentelemetry-instrumentation-anthropic` which
 
 ```bash
 AGENTOBSERVE_ENABLED=1                            # activates the bootstrap hook
-CLAUDE_CODE_ENABLE_TELEMETRY=1                     # enables Claude Agent SDK telemetry
-CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1              # enables detailed span attributes
+CLAUDE_CODE_ENABLE_TELEMETRY=1                     # enables Claude Code telemetry
+CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1              # enables trace spans
+OTEL_METRICS_EXPORTER=otlp                         # REQUIRED: enable metrics export
+OTEL_LOGS_EXPORTER=otlp                            # REQUIRED: enable logs/events export
+OTEL_TRACES_EXPORTER=otlp                          # REQUIRED: enable trace spans export
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 ```
 
 **Caveats for Anthropic SDK:**
 - The Claude Agent SDK emits its own OTEL spans — `agentobserve` creates a root span and propagates `TRACEPARENT` to subprocesses
-- The env vars must be passed in `ClaudeAgentOptions.env` as well, because the SDK spawns a subprocess
+- The env vars must be passed in `ClaudeCodeOptions.env` as well, because the SDK spawns a subprocess
+- `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER`, and `OTEL_TRACES_EXPORTER` MUST be set to `otlp` — without them, Claude Code collects telemetry but sends nothing
 - For multi-turn conversations using `resume`, preserve the same env vars across turns
 - `TRACEPARENT` is auto-injected into `os.environ` by the bootstrap — pass it through if spawning subprocesses
 
@@ -178,9 +182,10 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_LOG_USER_PROMPTS=1     # include user prompt text in logs
 OTEL_LOG_TOOL_DETAILS=1     # include tool names and metadata
 OTEL_LOG_TOOL_CONTENT=1     # include full tool input/output content
+OTEL_LOG_RAW_API_BODIES=1   # include full API request/response JSON (enables capturedBlocks)
 ```
 
-**Minimal integration pattern:**
+**Minimal integration pattern (Python SDK):**
 
 ```python
 import os
@@ -191,15 +196,16 @@ os.environ["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] = "1"
 os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4318"
 os.environ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf"
 
-from claude_agent_sdk import ClaudeAgentOptions, query
+from claude_code_sdk import ClaudeCodeOptions, query
 
-options = ClaudeAgentOptions(
-    system_prompt="You are a helpful assistant.",
+options = ClaudeCodeOptions(
     max_turns=10,
-    permission_mode="bypassPermissions",
     env={
         "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
         "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+        "OTEL_METRICS_EXPORTER": "otlp",
+        "OTEL_LOGS_EXPORTER": "otlp",
+        "OTEL_TRACES_EXPORTER": "otlp",
         "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
     },
@@ -207,6 +213,23 @@ options = ClaudeAgentOptions(
 
 async for msg in query(prompt="Hello!", options=options):
     print(msg)
+```
+
+**Direct CLI usage (no SDK wrapper):**
+
+```bash
+CLAUDE_CODE_ENABLE_TELEMETRY=1 \
+CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1 \
+OTEL_METRICS_EXPORTER=otlp \
+OTEL_LOGS_EXPORTER=otlp \
+OTEL_TRACES_EXPORTER=otlp \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+OTEL_LOG_USER_PROMPTS=1 \
+OTEL_LOG_TOOL_DETAILS=1 \
+OTEL_LOG_TOOL_CONTENT=1 \
+OTEL_LOG_RAW_API_BODIES=1 \
+claude
 ```
 
 ### How the Client Library Works (for reference)
@@ -260,7 +283,7 @@ Every adapter returns this shape. Fields a framework can't populate use the list
 
 ### Session
 ```
-id, framework ('anthropic'|'langchain'), startTime, endTime, turnCount,
+id, framework ('claude-code-cli'|'anthropic-sdk'|'langchain'), startTime, endTime, turnCount,
 totalCost (0), totalInputTokens, totalOutputTokens, systemPrompt (''),
 availableTools ([]), turns[]
 ```
@@ -280,6 +303,7 @@ totalInputTokens, totalOutputTokens, steps[], workflowGraph
 - **LLM_CALL**: `kind, model, inputTokens, outputTokens, cacheReadTokens (0), cacheCreationTokens (0), costUsd (0), durationMs, ttftMs (0), stopReason (''), requestId (''), blocks ([]), graphNode ('')`
 - **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), durationMs, success (true)`
 - **HOOK**: `kind, hookName, hookEvent, durationMs, success, numHooks, numSuccess`
+- **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime` — recursive: `nodes` may itself contain AGENT-kind entries. Use the shared `classifyAgentNodeKind` / `buildNestedAgentStep` helpers in `shared.js` to detect and emit these uniformly at any depth.
 
 ### Block (discriminated on `type`)
 - **THOUGHT**: `{ type, text }`

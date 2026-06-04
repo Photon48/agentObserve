@@ -80,22 +80,40 @@ function LLMDetailView({ node }) {
   );
 }
 
-export function NodeDetailView({ node }) {
+// Renders an AgentStep with a sub-agent zoom callback. Used at every depth
+// of the modal stack (workflow-node detail at depth 1, sub-agent at depth 2,
+// sub-sub-agent at depth 3, ...) — the component is the recursive unit.
+function AgentDetail({ headerLabel, step, onZoomIntoSubAgent }) {
+  return (
+    <div className="detail-view">
+      <div className="detail-view__header">
+        <span className="detail-view__kind">{KIND_ICONS.AGENT} AGENT</span>
+        <span className="detail-view__label">{headerLabel}</span>
+      </div>
+      {step
+        ? <AgentStep step={step} onZoomIntoSubAgent={onZoomIntoSubAgent} />
+        : <div className="text-dim">No agent data.</div>
+      }
+    </div>
+  );
+}
+
+// Dual-mode entry point:
+//   - When given a workflow `node`: route to AGENT or LLM detail based on
+//     node.kind (preserves existing workflow-level UX).
+//   - When given an `agentStep` + `label`: render an agent view scoped to
+//     that step (used for sub-agent zoom levels — depth >= 2).
+// onZoomIntoSubAgent is forwarded into the AgentStep so AGENT-kind cascade
+// cards can push a new zoom level via the parent (DungeonView.viewStack).
+export function NodeDetailView({ node, agentStep, label, onZoomIntoSubAgent }) {
+  if (agentStep) {
+    return <AgentDetail headerLabel={label || 'SUB-AGENT DETAIL'} step={agentStep} onZoomIntoSubAgent={onZoomIntoSubAgent} />;
+  }
+
   if (!node) return null;
 
   if (node.kind === 'AGENT') {
-    return (
-      <div className="detail-view">
-        <div className="detail-view__header">
-          <span className="detail-view__kind">{KIND_ICONS.AGENT} AGENT</span>
-          <span className="detail-view__label">AGENT DETAIL</span>
-        </div>
-        {node.agentStepData
-          ? <AgentStep step={node.agentStepData} />
-          : <div className="text-dim">No agent data.</div>
-        }
-      </div>
-    );
+    return <AgentDetail headerLabel={label || 'AGENT DETAIL'} step={node.agentStepData} onZoomIntoSubAgent={onZoomIntoSubAgent} />;
   }
 
   if (node.kind === 'UPSTREAM_LLM' || node.kind === 'DOWNSTREAM_LLM' || node.kind === 'PIPELINE_MEMBER') {

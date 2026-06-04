@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { HUD } from './HUD.jsx';
 import { WorkflowGraph } from './WorkflowGraph.jsx';
-import { NodeDetailView } from './NodeDetailView.jsx';
+import { StackedDetail } from './StackedDetail.jsx';
 import { TimelineBar } from './TimelineBar.jsx';
 import { WorkflowMinimap } from './WorkflowMinimap.jsx';
 import { useKeyNav } from '../hooks/useKeyNav.js';
@@ -257,13 +257,43 @@ function ToolDirectorySidebar({ tools, emptyState, nodeName }) {
   );
 }
 
+// Detail view model:
+//   - `detailMode: boolean` — are we zoomed in past the workflow graph?
+//   - `subAgentStack: Array<{ agentStep, label }>` — extra zoom levels
+//     stacked on top of the workflow-node detail.
+//
+// Level 1 (workflow-node detail) is NOT stored explicitly — it always
+// derives from the current `selectedNode` (driven by graphState). That
+// way arrow-key navigation (which mutates graphState) updates the
+// level-1 view live, exactly like the old single-boolean detailMode did.
+//
+// Sub-agent zooms (level 2+) are snapshots — they capture the specific
+// agentStep the user clicked into, independent of workflow selection.
+function makeSubAgentEntry(agentNode) {
+  return {
+    kind: 'subagent',
+    agentStep: { type: 'AGENT', nodes: agentNode.nodes || [], capturedBlocks: null, userPrompt: '' },
+    label: agentNode.agentName ? `SUB-AGENT · ${agentNode.agentName}` : 'SUB-AGENT',
+  };
+}
+function detailLabelFromWorkflowNode(node) {
+  if (!node) return '';
+  if (node.kind === 'AGENT') return 'AGENT DETAIL';
+  if (node.kind === 'UPSTREAM_LLM') return 'UPSTREAM LLM';
+  if (node.kind === 'DOWNSTREAM_LLM') return 'DOWNSTREAM LLM';
+  return (node.label || node.kind || '').toUpperCase();
+}
+
 export function DungeonView({ sessionId, onExit }) {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [turnIdx, setTurnIdx] = useState(0);
   const [graphState, setGraphState] = useState({ groupIdx: 0, nodeIdx: 0 });
+  // Are we zoomed in past the workflow graph? Live level-1 detail derives
+  // from selectedNode; sub-agent zooms layer on top in subAgentStack.
   const [detailMode, setDetailMode] = useState(false);
+  const [subAgentStack, setSubAgentStack] = useState([]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -279,6 +309,7 @@ export function DungeonView({ sessionId, onExit }) {
         setTurnIdx(0);
         setGraphState({ groupIdx: 0, nodeIdx: 0 });
         setDetailMode(false);
+        setSubAgentStack([]);
         setLoading(false);
       })
       .catch((e) => {
@@ -293,19 +324,35 @@ export function DungeonView({ sessionId, onExit }) {
   const selectedGroup = graph?.groups[graphState.groupIdx] || null;
   const selectedNode = selectedGroup?.nodes[graphState.nodeIdx] || null;
 
+  const onZoomIntoSubAgent = useCallback((agentNode) => {
+    setSubAgentStack((prev) => [...prev, makeSubAgentEntry(agentNode)]);
+  }, []);
+  const onExitDetail = useCallback(() => {
+    // Pop one sub-agent level if any are open, else leave detail mode.
+    if (subAgentStack.length > 0) {
+      setSubAgentStack((prev) => prev.slice(0, -1));
+    } else {
+      setDetailMode(false);
+    }
+  }, [subAgentStack.length]);
+
   const onTurnChange = useCallback((delta) => {
     const newTurnIdx = turnIdx + delta;
     if (newTurnIdx < 0 || newTurnIdx >= turns.length) return;
     const newGraph = turns[newTurnIdx]?.workflowGraph || null;
     setTurnIdx(newTurnIdx);
     setGraphState(resolveGraphState(selectedNode, graphState.groupIdx, newGraph));
-    // detailMode intentionally NOT reset — stay in whatever mode you were in
+    // Sub-agent zooms collapse — they're scoped to the previous turn.
+    // detailMode is preserved so the user stays in the detail view of
+    // the resolved node in the new turn.
+    setSubAgentStack([]);
   }, [turnIdx, turns, selectedNode, graphState.groupIdx]);
 
   const onTurnSelect = useCallback((idx) => {
     if (idx < 0 || idx >= turns.length) return;
     setTurnIdx(idx);
     setGraphState(resolveGraphState(selectedNode, graphState.groupIdx, turns[idx]?.workflowGraph));
+    setSubAgentStack([]);
   }, [turns, selectedNode, graphState.groupIdx]);
 
   useKeyNav({
@@ -316,7 +363,7 @@ export function DungeonView({ sessionId, onExit }) {
     onTurnChange,
     detailMode,
     onEnterDetail: () => setDetailMode(true),
-    onExitDetail: () => setDetailMode(false),
+    onExitDetail,
     onExitSession: onExit,
   });
 
@@ -369,20 +416,35 @@ export function DungeonView({ sessionId, onExit }) {
               />
               <TurnIOPanel turn={currentTurn} />
               <WorkflowMinimap
-                graph={graph}
+                turn={currentTurn}
                 groupIdx={graphState.groupIdx}
                 nodeIdx={graphState.nodeIdx}
+                detailMode={detailMode}
+                subAgentStack={subAgentStack}
                 onNodeSelect={(gIdx, nIdx) => setGraphState({ groupIdx: gIdx, nodeIdx: nIdx })}
               />
             </div>
           : <div className="step-panel__detail-wrap">
-              <div className="step-panel__detail-scroll">
-                <NodeDetailView node={selectedNode} />
-              </div>
+              <StackedDetail
+                // Level 1 is the live workflow-node detail (selectedNode
+                // changes with arrow keys); sub-agent zooms layer on top.
+                stack={[
+                  {
+                    kind: 'detail',
+                    workflowNode: selectedNode,
+                    label: detailLabelFromWorkflowNode(selectedNode),
+                  },
+                  ...subAgentStack,
+                ]}
+                onZoomIntoSubAgent={onZoomIntoSubAgent}
+                onPop={onExitDetail}
+              />
               <WorkflowMinimap
-                graph={graph}
+                turn={currentTurn}
                 groupIdx={graphState.groupIdx}
                 nodeIdx={graphState.nodeIdx}
+                detailMode={detailMode}
+                subAgentStack={subAgentStack}
                 onNodeSelect={(gIdx, nIdx) => setGraphState({ groupIdx: gIdx, nodeIdx: nIdx })}
               />
             </div>
