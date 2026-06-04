@@ -133,14 +133,50 @@ async for msg in query(prompt="What is 2 + 2?", options=options):
 
 The `opentelemetry-instrumentation-anthropic` package (included with `[anthropic]`) auto-instruments all API calls.
 
-### Optional: Richer Telemetry
+### Claude Code (CLI)
 
-For more detailed traces (tool inputs/outputs, user prompts in logs), add these env vars:
+If you're using the `claude` CLI directly (no Python SDK), no package install is needed. Configure telemetry through Claude Code's native settings file — `settings.json` — which is the same place you configure hooks, plugins, and permissions.
+
+Add an `"env"` block to **either** of:
+
+- `~/.claude/settings.json` — applies to every project (user-level)
+- `<your-project>/.claude/settings.json` — applies only when running `claude` from that project (project-level, can be committed to the repo so the whole team gets it)
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_TRACES_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
+    "OTEL_LOG_USER_PROMPTS": "1",
+    "OTEL_LOG_TOOL_DETAILS": "1",
+    "OTEL_LOG_TOOL_CONTENT": "1",
+    "OTEL_LOG_RAW_API_BODIES": "1"
+  }
+}
+```
+
+Restart Claude Code. Traces flow into `telemetry/<session_id>/` automatically.
+
+**Why settings.json (not your shell rc):** this is the same idiom you already use for Sentry, Datadog, Langfuse, etc. — the observability config lives on the app side, scoped to the app, removable in one place. No shell pollution, no `source` step, no dotfile drift.
+
+**Required vars:** the three `*_EXPORTER=otlp` lines. Without them the CLI collects telemetry but exports nothing.
+
+**Optional vars (richer traces):** `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT`, `OTEL_LOG_RAW_API_BODIES`. The last one is what surfaces sub-agent traces, thoughts, and full tool I/O (`capturedBlocks`) in the dashboard — without it you get span timings but no rich block-level detail.
+
+### Optional: Richer Telemetry (Claude Agent SDK)
+
+For SDK users, the same `OTEL_LOG_*` vars apply — set them alongside the other env vars in your Python code or `ClaudeAgentOptions.env`:
 
 ```bash
 export OTEL_LOG_USER_PROMPTS=1
 export OTEL_LOG_TOOL_DETAILS=1
 export OTEL_LOG_TOOL_CONTENT=1
+export OTEL_LOG_RAW_API_BODIES=1
 ```
 
 ## How It Works
