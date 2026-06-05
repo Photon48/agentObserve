@@ -396,62 +396,38 @@ export function buildSession(sessionId, raw) {
     }
   }
 
-  // Available tools: prefer gen_ai.tool.definitions on LLM spans (emitted by
-  // agentobserve's LangChain callback handler), fall back to execute_tool names.
-  const availableTools = [];
-  const toolIndex = new Map();
+  // Per-session tool catalog with shared object identity across all scopes.
+  // `mergeTool` is the single mint point; entries are shared between
+  // session.availableTools, turn.availableTools, and per-agent availableTools
+  // so inferToolSchemas mutations propagate to every reference.
+  const toolCatalog = new Map();
   function mergeTool({ name, description, inputSchema }) {
-    if (!name) return;
-    const existing = toolIndex.get(name);
+    if (!name) return null;
+    const existing = toolCatalog.get(name);
     if (!existing) {
       const entry = { name, description: description || '', inputSchema: inputSchema || null };
-      toolIndex.set(name, entry);
-      availableTools.push(entry);
-      return;
+      toolCatalog.set(name, entry);
+      return entry;
     }
     if (!existing.description && description) existing.description = description;
     if (!existing.inputSchema && inputSchema) existing.inputSchema = inputSchema;
+    return existing;
   }
 
-  for (const span of spans) {
-    // Two paths emit gen_ai.tool.definitions:
-    //   1. langsmith LLM spans (kind=llm or op=chat) — for frameworks that
-    //      land tool definitions on the LLM span itself.
-    //   2. `agentobserve.tool_definitions` helper spans emitted by the
-    //      agentobserve LangChain callback handler. LangSmith creates its
-    //      OTEL spans lazily (outside the OTEL context-var), so the handler
-    //      can't write onto the LLM span directly — instead it opens this
-    //      short-lived sibling span that the loader buckets into the
-    //      session by `session.id`.
-    const kind = getAttr(span.attributes, 'langsmith.span.kind');
-    const op   = getAttr(span.attributes, 'gen_ai.operation.name');
-    const isLlmSpan = kind === 'llm' || op === 'chat';
-    const isHelperSpan = span.name === 'agentobserve.tool_definitions';
-    if (!isLlmSpan && !isHelperSpan) continue;
-    const defs = getAttr(span.attributes, 'gen_ai.tool.definitions');
-    if (!defs) continue;
-    try {
-      const arr = JSON.parse(defs);
-      if (!Array.isArray(arr)) continue;
-      for (const t of arr) {
-        mergeTool({
-          name: t.name,
-          description: t.description || '',
-          inputSchema: t.input_schema || t.inputSchema || null,
-        });
-      }
-    } catch {}
-  }
-
-  for (const span of spans) {
-    if (getAttr(span.attributes, 'gen_ai.operation.name') === 'execute_tool') {
-      mergeTool({ name: span.name, description: '', inputSchema: null });
-    }
-  }
+  // Helper spans (`agentobserve.tool_definitions`) have no trace parentage to
+  // the LangGraph root because LangSmith's OTEL spans are created lazily
+  // outside the OTEL context-var. They are buckets at session level only —
+  // each turn matches them by time-window overlap.
+  const helperToolDefinitionSpans = spans.filter(
+    (s) => s.name === 'agentobserve.tool_definitions',
+  );
 
   const turns = rootSpans.map((root, idx) =>
-    buildTurn(idx, root, childrenOf, spanById)
+    buildTurn(idx, root, childrenOf, spanById, mergeTool, helperToolDefinitionSpans)
   );
+
+  // Session-level catalog = every entry minted during turn construction.
+  const availableTools = [...toolCatalog.values()];
 
   const firstSpan = rootSpans[0];
   const lastSpan = rootSpans[rootSpans.length - 1];
@@ -487,7 +463,7 @@ export function buildSession(sessionId, raw) {
 // Turn builder
 // ═════════════════════════════════════════════════════════════════════════════
 
-function buildTurn(idx, rootSpan, childrenOf, spanById) {
+function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, helperToolDefinitionSpans = []) {
   const startNano = rootSpan.startTimeUnixNano;
   const endNano = rootSpan.endTimeUnixNano;
   const durationMs = nanoToMs(endNano) - nanoToMs(startNano);
@@ -495,6 +471,59 @@ function buildTurn(idx, rootSpan, childrenOf, spanById) {
   const userPrompt = extractPromptText(getAttr(rootSpan.attributes, 'gen_ai.prompt'));
 
   const descendants = getDescendants(rootSpan.spanId, childrenOf);
+
+  // Per-agent-scope availableTools (strict isolation, no cross-scope leak).
+  //
+  // Each scope's list is built ONLY from the LLM/helper/execute_tool spans
+  // that fall within ITS OWN subtree (and time window, for helper spans which
+  // lack trace parentage). Mirrors the direct-children-only convention used
+  // by `collectToolCallsFromAgentNodes` so catalog and counts share the same
+  // semantics at every level.
+  function helperSpansInWindow(startNs, endNs) {
+    return helperToolDefinitionSpans.filter((s) => {
+      const sStart = BigInt(s.startTimeUnixNano);
+      const sEnd = BigInt(s.endTimeUnixNano);
+      return sStart >= startNs && sEnd <= endNs;
+    });
+  }
+  function collectScopeToolsFromSpans(scopeSpans, scopeHelperSpans) {
+    const list = [];
+    const seen = new Set();
+    function take({ name, description, inputSchema }) {
+      const entry = mergeTool({ name, description, inputSchema });
+      if (!entry || seen.has(entry.name)) return;
+      seen.add(entry.name);
+      list.push(entry);
+    }
+    function takeDefs(defs) {
+      if (!defs) return;
+      try {
+        const arr = JSON.parse(defs);
+        if (!Array.isArray(arr)) return;
+        for (const t of arr) {
+          take({
+            name: t.name,
+            description: t.description || '',
+            inputSchema: t.input_schema || t.inputSchema || null,
+          });
+        }
+      } catch {}
+    }
+    for (const s of scopeSpans) {
+      const kind = getAttr(s.attributes, 'langsmith.span.kind');
+      const op = getAttr(s.attributes, 'gen_ai.operation.name');
+      if (kind === 'llm' || op === 'chat') {
+        takeDefs(getAttr(s.attributes, 'gen_ai.tool.definitions'));
+      }
+      if (op === 'execute_tool') {
+        take({ name: s.name, description: '', inputSchema: null });
+      }
+    }
+    for (const s of scopeHelperSpans) {
+      takeDefs(getAttr(s.attributes, 'gen_ai.tool.definitions'));
+    }
+    return list;
+  }
 
   // Token totals from all LLM spans
   let totalInputTokens = 0;
@@ -564,10 +593,20 @@ function buildTurn(idx, rootSpan, childrenOf, spanById) {
   // recursing into nested AGENT-kind sub-agents so calls roll up.
   const toolCallCounts = collectToolCallsFromAgentNodes(agentNodes);
 
+  // Top-level AGENT step's availableTools — scoped to this turn's descendants
+  // and any helper spans that fall within the turn's time window. LangChain's
+  // buildTurn currently flattens sub-graphs into `agentNodes`, so the
+  // top-level scope here effectively covers the whole turn (see the
+  // TODO(sub-agents) block below for the planned nested-scope refinement —
+  // buildScopedAgentStep already produces per-sub-agent scoping for the
+  // workflow-node detail view).
+  const turnHelperSpans = helperSpansInWindow(BigInt(startNano), BigInt(endNano));
+  const stepAvailableTools = collectScopeToolsFromSpans(descendants, turnHelperSpans);
+
   // ── Steps ─────────────────────────────────────────────────────────────────
   const steps = [
     { type: 'PROMPT', text: userPrompt },
-    { type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts },
+    { type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts, availableTools: stepAvailableTools },
     { type: 'FINAL', totalCost: 0, totalInputTokens, totalOutputTokens, durationMs },
   ];
 
@@ -667,7 +706,9 @@ function buildTurn(idx, rootSpan, childrenOf, spanById) {
 
     const scopedBlocks = buildCapturedBlocks(scopedNodes, scopedLlmAndToolSpans);
     const scopedToolCallCounts = collectToolCallsFromAgentNodes(scopedNodes);
-    return { type: 'AGENT', nodes: scopedNodes, capturedBlocks: scopedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts: scopedToolCallCounts };
+    const scopedHelperSpans = helperSpansInWindow(BigInt(childSpan.startTimeUnixNano), BigInt(childSpan.endTimeUnixNano));
+    const scopedAvailableTools = collectScopeToolsFromSpans(scopedDescendants, scopedHelperSpans);
+    return { type: 'AGENT', nodes: scopedNodes, capturedBlocks: scopedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts: scopedToolCallCounts, availableTools: scopedAvailableTools };
   }
 
   // ── Workflow graph ────────────────────────────────────────────────────────
@@ -756,5 +797,6 @@ function buildTurn(idx, rootSpan, childrenOf, spanById) {
     totalOutputTokens,
     steps,
     workflowGraph: { hasPipeline: true, groups },
+    availableTools: stepAvailableTools,
   };
 }

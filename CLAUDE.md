@@ -294,19 +294,20 @@ availableTools ([]), turns[]
 ### Turn
 ```
 idx, userPrompt (''), startTime, endTime, durationMs, totalCost (0),
-totalInputTokens, totalOutputTokens, steps[], workflowGraph
+totalInputTokens, totalOutputTokens, steps[], workflowGraph, availableTools ([])
 ```
+`idx` is the turn's identity within a session (0-based position in `session.turns`). `availableTools` is the per-turn union of tools offered to any AGENT scope in this turn — a subset of `session.availableTools` that shares JS object identity with the session-level entries (so schema inference applied at the session level propagates here automatically).
 
 ### Step (discriminated on `type`)
 - **PROMPT**: `{ type, text }`
-- **AGENT**: `{ type, nodes: AgentNode[], capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts }` — `toolCallCounts: Record<string, number>` is a derived summary mapping each tool name to its invocation count among the **direct** TOOL-kind children of this AGENT step's `nodes` list. Calls inside nested AGENT-kind sub-agents are excluded — they surface only when the operator zooms into that sub-agent, which carries its own scope. Empty `{}` when no tools were called at this level. Produced by the shared `collectToolCallsFromAgentNodes` helper in `shared.js`; the frontend uses it to partition `session.availableTools` into "called" vs "unused" in the tools sidebar.
+- **AGENT**: `{ type, nodes: AgentNode[], capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts, availableTools }` — `toolCallCounts: Record<string, number>` is a derived summary mapping each tool name to its invocation count among the **direct** TOOL-kind children of this AGENT step's `nodes` list. Calls inside nested AGENT-kind sub-agents are excluded — they surface only when the operator zooms into that sub-agent, which carries its own scope. Empty `{}` when no tools were called at this level. Produced by the shared `collectToolCallsFromAgentNodes` helper in `shared.js`. `availableTools: ToolDef[]` is the **strictly scoped** tool catalog for this AGENT — built only from the LLM definitions/request bodies tied to its own direct LLM_CALL children. Sub-agents' tools never leak up and parent tools never leak down. Shares object identity with `session.availableTools` and `turn.availableTools`. The frontend partitions this list (not the session union) into "called" vs "unused" in the tools sidebar.
 - **FINAL**: `{ type, totalCost, totalInputTokens, totalOutputTokens, durationMs }`
 
 ### AgentNode (discriminated on `kind`)
 - **LLM_CALL**: `kind, model, inputTokens, outputTokens, cacheReadTokens (0), cacheCreationTokens (0), costUsd (0), durationMs, ttftMs (0), stopReason (''), requestId (''), blocks ([]), graphNode ('')`
 - **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), durationMs, success (true)`
 - **HOOK**: `kind, hookName, hookEvent, durationMs, success, numHooks, numSuccess`
-- **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime` — recursive: `nodes` may itself contain AGENT-kind entries. Use the shared `classifyAgentNodeKind` / `buildNestedAgentStep` helpers in `shared.js` to detect and emit these uniformly at any depth.
+- **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime, availableTools` — recursive: `nodes` may itself contain AGENT-kind entries. `availableTools` follows the same strict-isolation rule as the AGENT step (only this sub-agent's own direct LLM_CALL children contribute). Use the shared `classifyAgentNodeKind` / `buildNestedAgentStep` helpers in `shared.js` to detect and emit these uniformly at any depth.
 
 ### Block (discriminated on `type`)
 - **THOUGHT**: `{ type, text }`

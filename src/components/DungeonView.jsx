@@ -346,7 +346,15 @@ function ToolDirectorySidebar({ tools, callCounts, emptyState, nodeName, mode, o
 function makeSubAgentEntry(agentNode) {
   return {
     kind: 'subagent',
-    agentStep: { type: 'AGENT', nodes: agentNode.nodes || [], capturedBlocks: null, userPrompt: '' },
+    agentStep: {
+      type: 'AGENT',
+      nodes: agentNode.nodes || [],
+      capturedBlocks: null,
+      userPrompt: '',
+      // Carry the sub-agent's own scoped tool catalog through so the sidebar
+      // partitions against the right list when zoomed in.
+      availableTools: agentNode.availableTools || null,
+    },
     label: agentNode.agentName ? `SUB-AGENT · ${agentNode.agentName}` : 'SUB-AGENT',
   };
 }
@@ -572,7 +580,12 @@ export function DungeonView({ sessionId, onExit }) {
             onStep={stepTools}
           />
         : <ToolDirectorySidebar
-            tools={session?.availableTools || []}
+            tools={
+              activeAgentStep?.availableTools
+              ?? currentTurn?.availableTools
+              ?? session?.availableTools
+              ?? []
+            }
             callCounts={callCounts}
             mode={toolsMode}
             onStep={stepTools}

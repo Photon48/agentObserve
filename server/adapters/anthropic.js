@@ -106,6 +106,45 @@ export function buildSession(sessionId, raw, orphanSpans = []) {
             : String(firstReqBody.system))
         : '');
 
+  // Per-session tool catalog with shared object identity across all scopes.
+  // `mergeTool` is the single mint point; entries are shared between
+  // session.availableTools, turn.availableTools, and per-agent availableTools
+  // so inferToolSchemas mutations propagate to every reference.
+  const toolCatalog = new Map();
+  function mergeTool({ name, description, inputSchema }) {
+    if (!name) return null;
+    const existing = toolCatalog.get(name);
+    if (!existing) {
+      const entry = { name, description: description || '', inputSchema: inputSchema || null };
+      toolCatalog.set(name, entry);
+      return entry;
+    }
+    if (!existing.description && description) existing.description = description;
+    if (!existing.inputSchema && inputSchema) existing.inputSchema = inputSchema;
+    return existing;
+  }
+
+  // Session-only contribution: outer-orchestrator `anthropic.chat` tool defs.
+  // These belong to upstream pipeline LLM calls (guardrails, routers, etc.)
+  // rather than the agent itself, so they never surface at turn/agent scope —
+  // but they remain in the session-wide catalog for the session list view.
+  for (const span of spans) {
+    if (span.name !== 'anthropic.chat') continue;
+    const defs = getAttr(span.attributes, 'gen_ai.tool.definitions');
+    if (!defs) continue;
+    try {
+      const arr = JSON.parse(defs);
+      if (!Array.isArray(arr)) continue;
+      for (const t of arr) {
+        mergeTool({
+          name: t.name,
+          description: t.description || '',
+          inputSchema: t.input_schema || t.inputSchema || null,
+        });
+      }
+    } catch {}
+  }
+
   // For each log, find which interaction span it belongs to by timestamp
   function findTurnSpan(timeNano) {
     const t = BigInt(timeNano);
@@ -143,7 +182,7 @@ export function buildSession(sessionId, raw, orphanSpans = []) {
       : null;
     return buildTurn(idx, span, turnLogs, llmSpanByRequestId, toolSpanByUseId,
       requestBodies, responseBodies, capturedTurn, orchestratorSpans, prevEnd, nextStart,
-      pipelineSpans, childrenOf);
+      pipelineSpans, childrenOf, mergeTool);
   });
 
   // Session summary
@@ -160,73 +199,10 @@ export function buildSession(sessionId, raw, orphanSpans = []) {
     totalOutputTokens += turn.totalOutputTokens;
   }
 
-  // Collect available tools from every observation path through a merge that
-  // prefers richer data (non-empty description, non-null inputSchema).
-  const availableTools = [];
-  const toolIndex = new Map();
-  function mergeTool({ name, description, inputSchema }) {
-    if (!name) return;
-    const existing = toolIndex.get(name);
-    if (!existing) {
-      const entry = { name, description: description || '', inputSchema: inputSchema || null };
-      toolIndex.set(name, entry);
-      availableTools.push(entry);
-      return;
-    }
-    if (!existing.description && description) existing.description = description;
-    if (!existing.inputSchema && inputSchema) existing.inputSchema = inputSchema;
-  }
-
-  // Primary: OTEL gen_ai.tool.definitions on anthropic.chat spans emitted by
-  // opentelemetry-instrumentation-anthropic. Standard GenAI semantic convention.
-  for (const span of spans) {
-    if (span.name !== 'anthropic.chat') continue;
-    const defs = getAttr(span.attributes, 'gen_ai.tool.definitions');
-    if (!defs) continue;
-    try {
-      const arr = JSON.parse(defs);
-      if (!Array.isArray(arr)) continue;
-      for (const t of arr) {
-        mergeTool({
-          name: t.name,
-          description: t.description || '',
-          inputSchema: t.input_schema || t.inputSchema || null,
-        });
-      }
-    } catch {}
-  }
-
-  // Claude Code CLI path: raw request bodies expose the full Anthropic tools array.
-  for (const reqBody of Object.values(requestBodies)) {
-    for (const tool of reqBody.tools || []) {
-      mergeTool({
-        name: tool.name,
-        description: tool.description || '',
-        inputSchema: tool.input_schema || null,
-      });
-    }
-  }
-
-  // Name-only fallback: tools observed via actual usage. Never demotes a richer entry.
-  for (const turn of turns) {
-    const agentStep = turn.steps?.find((s) => s.type === 'AGENT');
-    for (const block of agentStep?.capturedBlocks || []) {
-      if (block.type === 'TOOL_USE') {
-        mergeTool({ name: block.name, description: '', inputSchema: null });
-      }
-    }
-    for (const node of agentStep?.nodes || []) {
-      if (node.kind === 'LLM_CALL') {
-        for (const block of node.blocks || []) {
-          if (block.type === 'TOOL_USE') {
-            mergeTool({ name: block.name, description: '', inputSchema: null });
-          }
-        }
-      } else if (node.kind === 'TOOL' && node.toolName) {
-        mergeTool({ name: node.toolName, description: '', inputSchema: null });
-      }
-    }
-  }
+  // Session-level catalog is the union of every entry minted during turn
+  // construction (plus the orchestrator pre-merge above). Object identity is
+  // preserved with turn/agent lists via the shared `mergeTool` closure.
+  const availableTools = [...toolCatalog.values()];
 
   // The CLI binary and the Python SDK both emit `claude_code.interaction`
   // spans, so canHandle() catches both. Distinguish them here: only label
@@ -381,7 +357,7 @@ function buildWorkflowGraph(pipelineSpan, childrenOf, interactionSpan, agentStep
   return { hasPipeline: !!pipelineSpan, groups };
 }
 
-function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUseId, requestBodies, responseBodies, capturedTurn, orchestratorSpans = [], prevEnd = '0', nextStart = null, pipelineSpans = [], childrenOf = {}) {
+function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUseId, requestBodies, responseBodies, capturedTurn, orchestratorSpans = [], prevEnd = '0', nextStart = null, pipelineSpans = [], childrenOf = {}, mergeTool = () => null) {
   const attrs = interactionSpan.attributes;
   const userPrompt = getAttr(attrs, 'user_prompt') || '';
   const startNano = interactionSpan.startTimeUnixNano;
@@ -812,8 +788,93 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
   // recursing into nested AGENT-kind sub-agents so calls roll up.
   const toolCallCounts = collectToolCallsFromAgentNodes(agentNodes);
 
+  // Per-agent-scope availableTools (strict isolation, no cross-scope leak).
+  //
+  // Each AGENT scope's list is built ONLY from its own direct LLM_CALL
+  // children — never traversing into AGENT-kind children — so a sub-agent's
+  // tools never leak into its parent's catalog and vice versa. Mirrors the
+  // direct-children-only convention used by `collectToolCallsFromAgentNodes`.
+  function collectScopeTools(scopedNodes) {
+    const list = [];
+    const seen = new Set();
+    function take({ name, description, inputSchema }) {
+      const entry = mergeTool({ name, description, inputSchema });
+      if (!entry || seen.has(entry.name)) return;
+      seen.add(entry.name);
+      list.push(entry);
+    }
+    for (const node of scopedNodes || []) {
+      if (node.kind === 'LLM_CALL') {
+        const reqId = node.requestId;
+        const reqBody = reqId ? requestBodies[reqId] : null;
+        for (const tool of reqBody?.tools || []) {
+          take({
+            name: tool.name,
+            description: tool.description || '',
+            inputSchema: tool.input_schema || null,
+          });
+        }
+        const llmSpan = reqId ? llmSpanByRequestId[reqId] : null;
+        const defs = llmSpan ? getAttr(llmSpan.attributes, 'gen_ai.tool.definitions') : null;
+        if (defs) {
+          try {
+            const arr = JSON.parse(defs);
+            if (Array.isArray(arr)) {
+              for (const t of arr) {
+                take({
+                  name: t.name,
+                  description: t.description || '',
+                  inputSchema: t.input_schema || t.inputSchema || null,
+                });
+              }
+            }
+          } catch {}
+        }
+        for (const block of node.blocks || []) {
+          if (block?.type === 'TOOL_USE' && block.name) {
+            take({ name: block.name, description: '', inputSchema: null });
+          }
+        }
+      } else if (node.kind === 'TOOL' && node.toolName) {
+        take({ name: node.toolName, description: '', inputSchema: null });
+      }
+    }
+    return list;
+  }
+
+  // Attach availableTools to every AGENT-kind node in the tree, then compute
+  // the top-level step's own list. Each scope is independent.
+  (function attachAvailableToolsToAgentTree(nodes) {
+    for (const node of nodes || []) {
+      if (node.kind === 'AGENT') {
+        node.availableTools = collectScopeTools(node.nodes);
+        attachAvailableToolsToAgentTree(node.nodes);
+      }
+    }
+  })(agentNodes);
+  const stepAvailableTools = collectScopeTools(agentNodes);
+
+  // Turn-level union: top-level step's tools + every nested AGENT's tools.
+  // Dedupe by object identity (entries are minted by the shared mergeTool).
+  const turnAvailableTools = [];
+  const turnSeen = new Set();
+  function unionInto(list) {
+    for (const t of list || []) {
+      if (!turnSeen.has(t.name)) { turnSeen.add(t.name); turnAvailableTools.push(t); }
+    }
+  }
+  unionInto(stepAvailableTools);
+  (function gatherFromTree(nodes) {
+    for (const node of nodes || []) {
+      if (node.kind === 'AGENT') {
+        unionInto(node.availableTools);
+        gatherFromTree(node.nodes);
+      }
+    }
+  })(agentNodes);
+
   // AGENT step (collapsed cascade of all LLM/TOOL/HOOK nodes)
-  steps.push({ type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts });
+  steps.push({ type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts, availableTools: stepAvailableTools });
 
   // FINAL step
   steps.push({
@@ -832,7 +893,7 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     const pEnd   = BigInt(p.endTimeUnixNano);
     return pStart <= iStart && pEnd >= iEnd;
   }) || null;
-  const agentStepData = { type: 'AGENT', nodes: agentNodes, capturedBlocks, userPrompt, toolCallCounts };
+  const agentStepData = { type: 'AGENT', nodes: agentNodes, capturedBlocks, userPrompt, toolCallCounts, availableTools: stepAvailableTools };
   const workflowGraph = buildWorkflowGraph(pipelineSpan, childrenOf, interactionSpan, agentStepData, preSpans, postSpans);
 
   return {
@@ -846,5 +907,6 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     totalOutputTokens,
     steps,
     workflowGraph,
+    availableTools: turnAvailableTools,
   };
 }
