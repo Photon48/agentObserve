@@ -305,15 +305,49 @@ totalInputTokens, totalOutputTokens, steps[], workflowGraph, availableTools ([])
 
 ### AgentNode (discriminated on `kind`)
 - **LLM_CALL**: `kind, model, inputTokens, outputTokens, cacheReadTokens (0), cacheCreationTokens (0), costUsd (0), durationMs, ttftMs (0), stopReason (''), requestId (''), blocks ([]), graphNode ('')`
-- **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), durationMs, success (true)`
+- **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), durationMs, success (true), error? ('')`
 - **HOOK**: `kind, hookName, hookEvent, durationMs, success, numHooks, numSuccess`
 - **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime, availableTools` — recursive: `nodes` may itself contain AGENT-kind entries. `availableTools` follows the same strict-isolation rule as the AGENT step (only this sub-agent's own direct LLM_CALL children contribute). Use the shared `classifyAgentNodeKind` / `buildNestedAgentStep` helpers in `shared.js` to detect and emit these uniformly at any depth.
 
+#### Parallel grouping on AgentNodes
+
+When the model emits **N ≥ 2 tool_use blocks in a single LLM response**, the matching TOOL- and AGENT-kind AgentNodes are stamped with four optional fields that the FE carousel (`src/components/agentStep/ParallelCarousel.jsx`) coalesces on:
+
+- `parallelGroup: string` — stable id `pg_<firstToolUseId>` shared by every member of one batch
+- `parallelSize: number` — group cardinality (always `≥ 2`)
+- `parallelIndex: number` — 0-based position within the group, matching the emission order in the LLM response
+- `parallelSiblingNames: string[]` — display names of every member, in group order, so the FE can render a "siblings: Bash, Read" label without re-scanning
+
+**Semantic:** the signal is model-emitted parallelism — what the agent decided to dispatch concurrently in one decision — NOT runtime scheduler concurrency. Tools that happen to execute with overlapping wall-clock time but came from separate LLM responses are NOT grouped (that case is visualized in the workflow graph, not the agent-step carousel).
+
+**Detection is per-adapter, from each framework's raw OTEL data** (no shared timing detector):
+
+| Framework | Source of the parallel batch |
+|---|---|
+| Claude Code CLI | `responseBodies[reqId].content` — any content array with ≥2 `tool_use` blocks |
+| Anthropic SDK | `responseBodies[reqId].content`, plus `capturedTurn.messages[m].blocks` when the SDK capture is present |
+| LangChain / LangGraph | LLM span `gen_ai.completion → JSON.parse → kwargs.tool_calls` (parallel array LangChain always populates on tool-calling responses); fallback to `kwargs.content` tool_use blocks |
+
+Adapters extract the list of model-native tool_use ids for each batch and pass it to the shared `stampParallelGroup(nodes, toolUseIds)` helper (`server/adapters/shared.js`), which locates every TOOL/AGENT AgentNode whose `toolUseId` matches and stamps the four fields. The group id is built via `parallelGroupIdFor(toolUseIds)` so the format stays centralized. Adapters recurse into nested `AGENT.nodes` so a sub-agent's own parallel batches get stamped at that scope.
+
 ### Block (discriminated on `type`)
-- **THOUGHT**: `{ type, text }`
+- **THOUGHT**: `{ type, text, redacted? (false), signature? ('') }` — Anthropic's
+  extended-thinking emits two physically distinct upstream shapes (an
+  unredacted `thinking` block with raw reasoning, and either a
+  `redacted_thinking` block or a `thinking` block whose `thinking` field
+  is the literal string `<REDACTED>` plus an opaque `signature` blob).
+  All three adapters collapse both redacted shapes into one canonical
+  form: `text === ''` AND `redacted === true`, with the crypto blob
+  preserved in `signature`. Unredacted reasoning content lands in `text`
+  with `redacted === false`. The FE shows a "redacted by anthropic"
+  badge for the redacted case; `signature` stays in the data model but
+  is not surfaced in the UI. Normalization lives in
+  `normalizeAnthropicContentBlock` in `server/adapters/shared.js` —
+  every adapter that may see Anthropic content blocks (anthropic-sdk,
+  claude-code-cli, langchain with a Claude backend) routes through it.
 - **TEXT**: `{ type, text }`
 - **TOOL_USE**: `{ type, id, name, input }`
-- **TOOL_RESULT**: `{ type, id, name, text, is_error? }`
+- **TOOL_RESULT**: `{ type, id, name, text, is_error?, success?, errorText?, durationMs? }` — `success`, `errorText`, and `durationMs` are populated by the adapter at emit time from the matched TOOL AgentNode so pairing/status rendering on the FE stays block-local (no cross-reference walk needed). `is_error` is the original Anthropic flag; `success === false` is the canonical source of truth and prefers `errorText` over `text` for the failure reason.
 - **AGENT_RESPONSE**: `{ type, text }`
 
 ### WorkflowGraph / WorkflowNode

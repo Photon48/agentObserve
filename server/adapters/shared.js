@@ -4,6 +4,35 @@ export function nanoToMs(nano) {
   return Number(BigInt(nano) / 1000000n);
 }
 
+// Normalize a single Anthropic-format content block into a canonical Block.
+// Returns null when the item type isn't one we surface (e.g. tool_result lives
+// in a separate pairing pass). Anthropic's redacted extended-thinking arrives
+// as type==='redacted_thinking' with a `data` field, OR as type==='thinking'
+// with the literal string "<REDACTED>" in the `thinking` field plus a
+// `signature` blob — both forms collapse to the same redacted THOUGHT shape so
+// the FE renders one consistent badge.
+export function normalizeAnthropicContentBlock(item) {
+  if (!item || typeof item !== 'object') return null;
+  if (item.type === 'thinking') {
+    const raw = typeof item.thinking === 'string' ? item.thinking : '';
+    const isRedacted = raw.trim() === '<REDACTED>';
+    if (isRedacted) {
+      return { type: 'THOUGHT', text: '', redacted: true, signature: item.signature || '' };
+    }
+    return { type: 'THOUGHT', text: raw, redacted: false };
+  }
+  if (item.type === 'redacted_thinking') {
+    return { type: 'THOUGHT', text: '', redacted: true, signature: item.data || '' };
+  }
+  if (item.type === 'text') {
+    return { type: 'TEXT', text: item.text || '' };
+  }
+  if (item.type === 'tool_use') {
+    return { type: 'TOOL_USE', id: item.id || '', name: item.name || '', input: item.input || {} };
+  }
+  return null;
+}
+
 export function nanoToDate(nano) {
   return new Date(Number(BigInt(nano) / 1000000n));
 }
@@ -233,6 +262,74 @@ export function collectToolCallsFromAgentNodes(nodes) {
     }
   }
   return counts;
+}
+
+// ── Parallel tool-call stamping (framework-agnostic) ────────────────────────
+//
+// The Anthropic API treats N tool_use blocks in ONE assistant response as a
+// parallel batch — this is the model's first-class parallel-tool-calling
+// mechanism. All three frameworks we support wrap that same content-block
+// API, so the bulletproof signal is identical across frameworks:
+//
+//   one LLM response carrying >=2 tool_use blocks (and the matching ids)
+//
+// Each adapter extracts that list from its OWN raw OTEL data path:
+//   - Claude Code CLI:  responseBodies[reqId].content
+//   - Anthropic SDK:    responseBodies[reqId].content  (or capturedTurn blocks)
+//   - LangChain:        gen_ai.completion → JSON.parse → kwargs.tool_calls
+//
+// Once the adapter has the list of tool_use ids for a batch, it calls
+// `stampParallelGroup` to write the canonical fields. This file is the
+// single source of truth for the four field shapes:
+//
+//   parallelGroup        — stable id shared by every member of the batch
+//   parallelSize         — group cardinality (>=2)
+//   parallelIndex        — 0..N-1 position within the group
+//   parallelSiblingNames — display names of every member, in group order
+//
+// No timing knowledge. No OTEL knowledge. Pure stamp.
+
+export function parallelGroupIdFor(toolUseIds) {
+  return 'pg_' + (toolUseIds[0] || 'unknown');
+}
+
+function _displayName(node) {
+  if (node.kind === 'TOOL') return node.toolName || 'tool';
+  if (node.kind === 'AGENT') return node.agentName || 'subagent';
+  return node.kind || '';
+}
+
+// Locate TOOL/AGENT agentNodes by their `toolUseId` (model-native id). If
+// >=2 match, stamp the parallel fields. Returns the number of members
+// stamped (so the caller can detect whether a batch landed or not).
+export function stampParallelGroup(nodes, toolUseIds) {
+  if (!Array.isArray(nodes) || !Array.isArray(toolUseIds)) return 0;
+  if (toolUseIds.length < 2) return 0;
+
+  const idSet = new Set(toolUseIds);
+  const members = [];
+  for (const n of nodes) {
+    if (!n) continue;
+    if ((n.kind === 'TOOL' || n.kind === 'AGENT') && n.toolUseId && idSet.has(n.toolUseId)) {
+      members.push(n);
+    }
+  }
+  if (members.length < 2) return 0;
+
+  // Preserve the order in toolUseIds (the order the model emitted) — that's
+  // the order the carousel walks. agentNodes might be in a different order
+  // for late-arriving sub-agent promotion.
+  members.sort((a, b) => toolUseIds.indexOf(a.toolUseId) - toolUseIds.indexOf(b.toolUseId));
+
+  const gid = parallelGroupIdFor(toolUseIds);
+  const siblingNames = members.map(_displayName);
+  members.forEach((m, idx) => {
+    m.parallelGroup = gid;
+    m.parallelSize = members.length;
+    m.parallelIndex = idx;
+    m.parallelSiblingNames = siblingNames;
+  });
+  return members.length;
 }
 
 // ── Infer tool schemas from observed inputs ──────────────────────────────────

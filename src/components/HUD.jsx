@@ -19,13 +19,13 @@ export function HUD({ sessionId, turnIdx, turnCount, turn }) {
           className={`hud__value hud__value--copyable${copied ? ' hud__value--copied' : ''}`}
           onClick={handleCopy}
         >
-          {copied ? 'copied' : sessionId ? truncateId(sessionId, 16) : '—'}
+          {copied ? 'copied' : sessionId ? truncateId(sessionId, 16) : '...'}
         </span>
       </div>
       <div className="hud__cell">
         <span className="hud__label">TURN</span>
         <span className="hud__counter">
-          {turnCount > 0 ? `${turnIdx + 1}/${turnCount}` : '—'}
+          {turnCount > 0 ? `${turnIdx + 1}/${turnCount}` : '...'}
         </span>
       </div>
       {turn && (

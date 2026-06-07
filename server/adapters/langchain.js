@@ -8,9 +8,18 @@ import {
   detectWorkflowNodeKind,
   extractTextContent,
   collectToolCallsFromAgentNodes,
+  stampParallelGroup,
+  normalizeAnthropicContentBlock,
 } from './shared.js';
 
 export const FRAMEWORK = 'langchain';
+
+// Spans the agentobserve client library emits as session-level declarations,
+// NOT as units of work. They belong to the session (helperToolDefinitionSpans
+// feeds the tool catalog) but must never appear as their own turn root.
+// Single source of truth — referenced by both the root-span filter and the
+// catalog filter below.
+const HELPER_SPAN_NAMES = new Set(['agentobserve.tool_definitions']);
 
 export function canHandle(rawData) {
   return rawData.spans?.some((s) => s.name === 'LangGraph') ?? false;
@@ -260,16 +269,44 @@ function buildBlocksFromLLMSpan(span) {
     const gen = obj.generations?.flat()?.[0];
     if (!gen) return [];
 
-    const content = gen.message?.kwargs?.content;
+    const kwargs = gen.message?.kwargs;
+    const content = kwargs?.content;
 
-    // Array content: mixed text + tool_use blocks (agent decided to call tools)
+    // Parallel representation LangChain ALWAYS populates on tool-calling LLM
+    // responses: kwargs.tool_calls = [{ name, args, id, type }]. We use it as
+    // a single tighter fallback for tool_use blocks whose inline `id` is
+    // empty — index by name with consumption to handle the rare case of two
+    // calls to the same tool in one response.
+    const toolCallsByName = {};
+    if (Array.isArray(kwargs?.tool_calls)) {
+      for (const tc of kwargs.tool_calls) {
+        if (!tc?.name || !tc?.id) continue;
+        if (!toolCallsByName[tc.name]) toolCallsByName[tc.name] = [];
+        toolCallsByName[tc.name].push(tc.id);
+      }
+    }
+
+    // Array content: mixed text + tool_use + thinking blocks. When LangChain
+    // wraps Anthropic with extended thinking enabled, the assistant content
+    // includes 'thinking'/'redacted_thinking' entries with the same shape as
+    // Anthropic's direct API — route those through the shared normalizer so
+    // redacted thinking surfaces consistently across all three frameworks.
     if (Array.isArray(content)) {
       const blocks = [];
       for (const item of content) {
+        if (item.type === 'thinking' || item.type === 'redacted_thinking') {
+          const block = normalizeAnthropicContentBlock(item);
+          if (block) blocks.push(block);
+          continue;
+        }
         if (item.type === 'text' && item.text) {
           blocks.push({ type: 'TEXT', text: item.text });
         } else if (item.type === 'tool_use') {
-          blocks.push({ type: 'TOOL_USE', id: item.id || '', name: item.name || '', input: item.input || {} });
+          let id = item.id || '';
+          if (!id && item.name && toolCallsByName[item.name]?.length) {
+            id = toolCallsByName[item.name].shift();
+          }
+          blocks.push({ type: 'TOOL_USE', id, name: item.name || '', input: item.input || {} });
         }
       }
       return blocks;
@@ -284,18 +321,93 @@ function buildBlocksFromLLMSpan(span) {
   return [];
 }
 
+// ── Parallel-batch signal — straight from the LLM span's raw OTEL ─────────
+//
+// LangSmith serializes the LangChain LLM response into `gen_ai.completion`.
+// LangChain ALWAYS populates `kwargs.tool_calls = [{name, args, id, type}]`
+// on every tool-calling response — that array IS the model-emitted parallel
+// batch. Falls back to walking `kwargs.content` for `type==='tool_use'`
+// blocks (older serializations / edge cases).
+
+function extractToolCallIdsFromLLMSpan(span) {
+  const completionStr = getAttr(span.attributes, 'gen_ai.completion');
+  if (!completionStr) return [];
+  try {
+    const obj = JSON.parse(completionStr);
+    const kwargs = obj.generations?.flat()?.[0]?.message?.kwargs;
+    if (!kwargs) return [];
+    if (Array.isArray(kwargs.tool_calls)) {
+      const ids = kwargs.tool_calls.map((t) => t?.id).filter(Boolean);
+      if (ids.length > 0) return ids;
+    }
+    if (Array.isArray(kwargs.content)) {
+      return kwargs.content
+        .filter((b) => b?.type === 'tool_use' && b.id)
+        .map((b) => b.id);
+    }
+  } catch {}
+  return [];
+}
+
+// ── Canonical TOOL pairing — single read of LangChain's built-in shared id ──
+//
+// LangChain's `langchain_core.messages.ToolMessage` model REQUIRES a
+// `tool_call_id` field; the agent runtime sets it from the LLM's emitted
+// tool_use id and copies it verbatim onto the result message. LangSmith's
+// OTEL exporter then serializes the whole ToolMessage as the JSON value of
+// `gen_ai.completion` on each `execute_tool` span. So the shared id always
+// lives at exactly one path:
+//
+//   gen_ai.completion → JSON.parse → output.tool_call_id
+//
+// Same payload carries `output.name` (the tool name LangChain registered),
+// `output.content` (the result text), and `output.status` ("success" |
+// "error"). One parse, five fields out, no fallback chain.
+
+function parseLangChainToolResult(toolSpan) {
+  const empty = { toolCallId: '', toolName: toolSpan.name || '', content: '', success: true, errorText: '' };
+  const raw = getAttr(toolSpan.attributes, 'gen_ai.completion');
+  if (!raw) return empty;
+  try {
+    const parsed = JSON.parse(raw);
+    const out = parsed?.output;
+    if (!out || typeof out !== 'object') return empty;
+    const success = out.status !== 'error';
+    let content = '';
+    if (typeof out.content === 'string') {
+      content = out.content;
+    } else if (Array.isArray(out.content)) {
+      content = extractTextContent(out.content);
+    }
+    return {
+      toolCallId: out.tool_call_id || '',
+      toolName: out.name || toolSpan.name || '',
+      content,
+      success,
+      errorText: success ? '' : (content || ''),
+    };
+  } catch {
+    return empty;
+  }
+}
+
 // ── Build TOOL_RESULT blocks from tool execution spans ──────────────────────
 //
-// Tool spans have gen_ai.completion with the tool output. We pair each
-// TOOL_USE block (from the preceding LLM response) with its TOOL_RESULT.
+// Reads from `parseLangChainToolResult` only — no extractCompletionText, no
+// OTEL status-code probing. The shared id, status, and content all come from
+// the same single parse the TOOL agentNode used.
 
-function buildToolResultBlock(toolSpan) {
-  const output = extractCompletionText(getAttr(toolSpan.attributes, 'gen_ai.completion'));
+function buildToolResultBlock(toolSpan, toolNode) {
+  const info = parseLangChainToolResult(toolSpan);
   return {
     type: 'TOOL_RESULT',
-    id: toolSpan.spanId,
-    name: toolSpan.name,
-    text: output,
+    id: info.toolCallId,
+    name: info.toolName,
+    text: info.content,
+    success: info.success,
+    errorText: info.errorText,
+    durationMs: toolNode?.durationMs ?? 0,
+    is_error: !info.success || undefined,
   };
 }
 
@@ -309,10 +421,19 @@ function buildToolResultBlock(toolSpan) {
 function buildCapturedBlocks(agentNodes, llmAndToolSpans) {
   const blocks = [];
 
+  // Lookup keyed on the OTEL span id so we can find the matching TOOL
+  // agentNode while iterating spans. The agentNode's `toolUseId` is now the
+  // model-native shared id (toolu_…), so we bridge through the transient
+  // `_lcSpanId` field stamped at TOOL push time.
+  const toolNodeBySpanId = {};
+  for (const n of agentNodes || []) {
+    if (n.kind === 'TOOL' && n._lcSpanId) toolNodeBySpanId[n._lcSpanId] = n;
+  }
+
   for (const span of llmAndToolSpans) {
     const op = getAttr(span.attributes, 'gen_ai.operation.name');
     if (op === 'execute_tool') {
-      blocks.push(buildToolResultBlock(span));
+      blocks.push(buildToolResultBlock(span, toolNodeBySpanId[span.spanId]));
     } else {
       blocks.push(...buildBlocksFromLLMSpan(span));
     }
@@ -348,8 +469,12 @@ export function buildSession(sessionId, raw) {
     }
   }
 
+  // Real turn roots only. The agentobserve client library emits standalone
+  // helper spans (tool-catalog declarations) that have no parent — they're
+  // declarations, not work, and must never appear as their own turn. See
+  // HELPER_SPAN_NAMES at the top of this module.
   const rootSpans = spans
-    .filter((s) => !s.parentSpanId || !spanById[s.parentSpanId])
+    .filter((s) => (!s.parentSpanId || !spanById[s.parentSpanId]) && !HELPER_SPAN_NAMES.has(s.name))
     .sort(sortByStart);
 
   if (rootSpans.length === 0) return null;
@@ -414,13 +539,12 @@ export function buildSession(sessionId, raw) {
     return existing;
   }
 
-  // Helper spans (`agentobserve.tool_definitions`) have no trace parentage to
-  // the LangGraph root because LangSmith's OTEL spans are created lazily
-  // outside the OTEL context-var. They are buckets at session level only —
-  // each turn matches them by time-window overlap.
-  const helperToolDefinitionSpans = spans.filter(
-    (s) => s.name === 'agentobserve.tool_definitions',
-  );
+  // Helper spans have no trace parentage to the LangGraph root because
+  // LangSmith's OTEL spans are created lazily outside the OTEL context-var.
+  // They are buckets at session level only — each turn matches them by
+  // time-window overlap. Single source of truth shared with the root-span
+  // filter above.
+  const helperToolDefinitionSpans = spans.filter((s) => HELPER_SPAN_NAMES.has(s.name));
 
   const turns = rootSpans.map((root, idx) =>
     buildTurn(idx, root, childrenOf, spanById, mergeTool, helperToolDefinitionSpans)
@@ -551,17 +675,23 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
     if (op === 'execute_tool') {
       let toolInput = '';
       try { toolInput = getAttr(span.attributes, 'gen_ai.prompt') || ''; } catch {}
-      const toolOutput = extractCompletionText(getAttr(span.attributes, 'gen_ai.completion'));
+      const info = parseLangChainToolResult(span);
       agentNodes.push({
         kind: 'TOOL',
-        toolUseId: span.spanId,
-        toolName: span.name,
+        toolUseId: info.toolCallId,           // shared id — matches TOOL_USE.id
+        toolName: info.toolName,
         decision: 'accept',
         source: 'langchain',
         toolInput,
-        toolResultSizeBytes: toolOutput.length,
+        toolOutput: info.content,
+        toolResultSizeBytes: info.content.length,
         durationMs: spanDur,
-        success: true,
+        success: info.success,
+        error: info.errorText,
+        // Transient lookup bridge — buildCapturedBlocks finds the matching
+        // agentNode by the OTEL span id while still emitting the shared
+        // model-native id on TOOL_RESULT. Stripped before return.
+        _lcSpanId: span.spanId,
       });
     } else {
       const model = getAttr(span.attributes, 'gen_ai.request.model') || '';
@@ -586,8 +716,24 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
     }
   }
 
+  // Parallel detection — structural, from each LLM span's raw OTEL data.
+  // LangSmith serializes the LangChain LLM response into `gen_ai.completion`;
+  // `generations[0][0].message.kwargs.tool_calls` (and equivalently
+  // `kwargs.content[i].type==='tool_use'`) IS the model-emitted parallel
+  // batch. Any LLM span whose completion holds >=2 tool_call ids → stamp.
+  for (const span of llmAndToolSpans) {
+    if (getAttr(span.attributes, 'gen_ai.operation.name') !== 'chat') continue;
+    const ids = extractToolCallIdsFromLLMSpan(span);
+    if (ids.length >= 2) stampParallelGroup(agentNodes, ids);
+  }
+
   // ── Captured blocks: unified conversation stream ──────────────────────────
   const capturedBlocks = buildCapturedBlocks(agentNodes, llmAndToolSpans);
+
+  // Strip the transient lookup bridge — it must not leak into the canonical schema.
+  for (const n of agentNodes) {
+    if (n._lcSpanId !== undefined) delete n._lcSpanId;
+  }
 
   // Derived tool-call summary — counts every TOOL-kind invocation by name,
   // recursing into nested AGENT-kind sub-agents so calls roll up.
@@ -669,17 +815,20 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
       if (op === 'execute_tool') {
         let toolInput = '';
         try { toolInput = getAttr(span.attributes, 'gen_ai.prompt') || ''; } catch {}
-        const toolOutput = extractCompletionText(getAttr(span.attributes, 'gen_ai.completion'));
+        const info = parseLangChainToolResult(span);
         scopedNodes.push({
           kind: 'TOOL',
-          toolUseId: span.spanId,
-          toolName: span.name,
+          toolUseId: info.toolCallId,           // shared id — matches TOOL_USE.id
+          toolName: info.toolName,
           decision: 'accept',
           source: 'langchain',
           toolInput,
-          toolResultSizeBytes: toolOutput.length,
+          toolOutput: info.content,
+          toolResultSizeBytes: info.content.length,
           durationMs: spanDur,
-          success: true,
+          success: info.success,
+          error: info.errorText,
+          _lcSpanId: span.spanId,
         });
       } else {
         const model = getAttr(span.attributes, 'gen_ai.request.model') || '';
@@ -704,7 +853,20 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
       }
     }
 
+    // Scoped parallel detection — same per-LLM-span signal as top-level.
+    for (const span of scopedLlmAndToolSpans) {
+      if (getAttr(span.attributes, 'gen_ai.operation.name') !== 'chat') continue;
+      const ids = extractToolCallIdsFromLLMSpan(span);
+      if (ids.length >= 2) stampParallelGroup(scopedNodes, ids);
+    }
+
     const scopedBlocks = buildCapturedBlocks(scopedNodes, scopedLlmAndToolSpans);
+
+    // Strip transient lookup bridge — never leaks into canonical schema.
+    for (const n of scopedNodes) {
+      if (n._lcSpanId !== undefined) delete n._lcSpanId;
+    }
+
     const scopedToolCallCounts = collectToolCallsFromAgentNodes(scopedNodes);
     const scopedHelperSpans = helperSpansInWindow(BigInt(childSpan.startTimeUnixNano), BigInt(childSpan.endTimeUnixNano));
     const scopedAvailableTools = collectScopeToolsFromSpans(scopedDescendants, scopedHelperSpans);

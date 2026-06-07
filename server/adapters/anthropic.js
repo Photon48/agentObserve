@@ -1,5 +1,5 @@
 import { getAttr } from '../loader.js';
-import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendants, collectToolCallsFromAgentNodes } from './shared.js';
+import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendants, collectToolCallsFromAgentNodes, stampParallelGroup, normalizeAnthropicContentBlock } from './shared.js';
 
 export const FRAMEWORK = 'anthropic-sdk';
 
@@ -233,13 +233,8 @@ function buildBlocksFromResponse(respBody) {
   if (!respBody?.content) return [];
   const blocks = [];
   for (const item of respBody.content) {
-    if (item.type === 'thinking') {
-      blocks.push({ type: 'THOUGHT', text: item.thinking || '' });
-    } else if (item.type === 'text') {
-      blocks.push({ type: 'TEXT', text: item.text || '' });
-    } else if (item.type === 'tool_use') {
-      blocks.push({ type: 'TOOL_USE', id: item.id, name: item.name, input: item.input || {} });
-    }
+    const block = normalizeAnthropicContentBlock(item);
+    if (block) blocks.push(block);
   }
   return blocks;
 }
@@ -514,7 +509,9 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
         } catch {}
       }
 
-      agentNodes.push({
+      const toolSpan = toolSpanByUseId[toolUseId];
+      const toolError = getAttr(resultLog?.attributes, 'error') || '';
+      const toolNode = {
         kind: 'TOOL',
         toolUseId,
         toolName,
@@ -524,7 +521,9 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
         toolResultSizeBytes,
         durationMs: toolDurationMs,
         success: success === 'true' || success === true,
-      });
+      };
+      if (toolError) toolNode.error = toolError;
+      agentNodes.push(toolNode);
     } else if (ev.type === 'hook') {
       const { hookKey } = ev;
       const pair = hookPairs[hookKey] || {};
@@ -576,6 +575,13 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
   const upstreamPre  = preSpans.map((s) => buildWorkflowNode(s, 'UPSTREAM_LLM', null));
   const upstreamPost = postSpans.map((s) => buildWorkflowNode(s, 'DOWNSTREAM_LLM', null));
 
+  // TOOL-node lookup so TOOL_RESULT blocks can carry status (success / error
+  // reason / duration). Pairing on the FE then stays block-local.
+  const toolNodeByUseId = {};
+  for (const n of agentNodes) {
+    if (n.kind === 'TOOL' && n.toolUseId) toolNodeByUseId[n.toolUseId] = n;
+  }
+
   // SDK capture: build flat conversation blocks for the turn
   let capturedBlocks = null;
   if (capturedTurn) {
@@ -588,20 +594,51 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
       }
     }
 
+    // The SDK capture strips extended-thinking content even when the API
+    // returned it (it shows up as { type: "THOUGHT", text: "" }). Source the
+    // redacted-with-signature variant from the LLM_CALL.blocks we already
+    // built from api_bodies via the normalizer — and fall back to a plain
+    // redacted shape when no api-body match exists.
+    const redactedThoughtPool = [];
+    for (const n of agentNodes) {
+      if (n.kind !== 'LLM_CALL') continue;
+      for (const b of n.blocks || []) {
+        if (b.type === 'THOUGHT') redactedThoughtPool.push(b);
+      }
+    }
+    let thoughtPoolIdx = 0;
+
     // Flatten all assistant blocks in order; inject TOOL_RESULT after each TOOL_USE
     capturedBlocks = [];
     for (const msg of capturedTurn.messages) {
       if (msg.role !== 'assistant') continue;
       for (const block of msg.blocks || []) {
+        if (block.type === 'THOUGHT') {
+          const text = typeof block.text === 'string' ? block.text : '';
+          const isRedacted = text.trim() === '' || text.trim() === '<REDACTED>';
+          if (isRedacted) {
+            const better = redactedThoughtPool[thoughtPoolIdx++];
+            capturedBlocks.push(better || { type: 'THOUGHT', text: '', redacted: true, signature: '' });
+          } else {
+            capturedBlocks.push({ type: 'THOUGHT', text, redacted: false });
+          }
+          continue;
+        }
         capturedBlocks.push(block);
         if (block.type === 'TOOL_USE' && toolResultMap[block.id]) {
           const r = toolResultMap[block.id];
+          const tn = toolNodeByUseId[block.id];
+          const errText = tn?.error || '';
+          const ok = tn ? (!errText && tn.success !== false) : !(r.is_error);
           capturedBlocks.push({
             type: 'TOOL_RESULT',
             id: block.id,
             name: block.name,
             text: r.text || '',
             is_error: r.is_error || false,
+            success: ok,
+            errorText: errText,
+            durationMs: tn?.durationMs ?? 0,
           });
         }
       }
@@ -628,11 +665,18 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
         for (const block of node.blocks) {
           expanded.push(block);
           if (block.type === 'TOOL_USE' && resultTexts[block.id] !== undefined) {
+            const tn = toolNodeByUseId[block.id];
+            const errText = tn?.error || '';
+            const ok = tn ? (!errText && tn.success !== false) : true;
             expanded.push({
               type: 'TOOL_RESULT',
               id: block.id,
               name: block.name,
               text: resultTexts[block.id],
+              success: ok,
+              errorText: errText,
+              durationMs: tn?.durationMs ?? 0,
+              is_error: !ok || undefined,
             });
           }
         }
@@ -783,6 +827,50 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
       };
     }
   })(agentNodes, agentToolSpansForTurn);
+
+  // Parallel detection — structural, from the SDK's raw OTEL data paths.
+  // The Anthropic API emits a parallel batch as N tool_use blocks in ONE
+  // assistant response. Two data sources express the same thing:
+  //   1. responseBodies[reqId].content   (file mode, raw API payload)
+  //   2. capturedTurn.messages[m].blocks (SDK capture path)
+  // We try (1) first because it's exact OTEL; (2) fills in when bodies
+  // weren't captured. Recurses into promoted sub-agents.
+  (function stampParallelFromAnthropicSources(nodes) {
+    // Path 1: raw response bodies
+    for (const respBody of Object.values(responseBodies || {})) {
+      const content = Array.isArray(respBody?.content) ? respBody.content : [];
+      const toolUseIds = content
+        .filter((c) => c && c.type === 'tool_use' && c.id)
+        .map((c) => c.id);
+      if (toolUseIds.length >= 2) stampParallelGroup(nodes, toolUseIds);
+    }
+    // Path 2: SDK capture per-assistant-message blocks
+    if (capturedTurn?.messages) {
+      for (const msg of capturedTurn.messages) {
+        if (msg.role !== 'assistant') continue;
+        const blocks = Array.isArray(msg.blocks) ? msg.blocks : [];
+        const toolUseIds = blocks
+          .filter((b) => b && b.type === 'TOOL_USE' && b.id)
+          .map((b) => b.id);
+        if (toolUseIds.length >= 2) stampParallelGroup(nodes, toolUseIds);
+      }
+    }
+    // Recurse into sub-agents — they may themselves emit parallel batches
+    // via their own LLM_CALL.blocks (we don't have a separate response-body
+    // file for sub-agents, so use the canonical LLM_CALL.blocks already
+    // assembled from the same raw OTEL).
+    for (const n of nodes) {
+      if (n.kind !== 'AGENT' || !Array.isArray(n.nodes)) continue;
+      for (const child of n.nodes) {
+        if (child.kind !== 'LLM_CALL' || !Array.isArray(child.blocks)) continue;
+        const toolUseIds = child.blocks
+          .filter((b) => b && b.type === 'TOOL_USE' && b.id)
+          .map((b) => b.id);
+        if (toolUseIds.length >= 2) stampParallelGroup(n.nodes, toolUseIds);
+      }
+      stampParallelFromAnthropicSources(n.nodes);
+    }
+  })(agentNodes);
 
   // Derived tool-call summary — counts every TOOL-kind invocation by name,
   // recursing into nested AGENT-kind sub-agents so calls roll up.

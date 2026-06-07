@@ -1,5 +1,5 @@
 import { getAttr } from '../loader.js';
-import { nanoToMs, nanoToDate, inferToolSchemas, collectToolCallsFromAgentNodes } from './shared.js';
+import { nanoToMs, nanoToDate, inferToolSchemas, collectToolCallsFromAgentNodes, stampParallelGroup, normalizeAnthropicContentBlock } from './shared.js';
 
 export const FRAMEWORK = 'claude-code-cli';
 
@@ -183,13 +183,8 @@ function buildBlocksFromResponse(respBody) {
   if (!respBody?.content) return [];
   const blocks = [];
   for (const item of respBody.content) {
-    if (item.type === 'thinking') {
-      blocks.push({ type: 'THOUGHT', text: item.thinking || '' });
-    } else if (item.type === 'text') {
-      blocks.push({ type: 'TEXT', text: item.text || '' });
-    } else if (item.type === 'tool_use') {
-      blocks.push({ type: 'TOOL_USE', id: item.id, name: item.name, input: item.input || {} });
-    }
+    const block = normalizeAnthropicContentBlock(item);
+    if (block) blocks.push(block);
   }
   return blocks;
 }
@@ -477,9 +472,6 @@ function buildTurn(
         toolResultSizeBytes,
         durationMs: toolDurationMs,
         success: success === 'true' || success === true,
-        // Span timing for parallel detection (cleaned up later)
-        _spanStart: toolSpan ? toolSpan.startTimeUnixNano : null,
-        _spanEnd: toolSpan ? toolSpan.endTimeUnixNano : null,
         _toolSpanId: toolSpan ? toolSpan.spanId : null,
       };
       if (toolOutput) toolNode.toolOutput = toolOutput;
@@ -549,36 +541,12 @@ function buildTurn(
     }
   }
 
-  // Detect parallel tool groups from span timing overlap
-  for (let i = 0; i < agentNodes.length; i++) {
-    const node = agentNodes[i];
-    if (node.kind !== 'TOOL' || !node._spanStart) continue;
-    const group = [i];
-    for (let j = i + 1; j < agentNodes.length; j++) {
-      const next = agentNodes[j];
-      if (next.kind !== 'TOOL' || !next._spanStart) break;
-      const groupEnd = group.reduce((mx, k) => {
-        const e = BigInt(agentNodes[k]._spanEnd || '0');
-        return e > mx ? e : mx;
-      }, 0n);
-      if (BigInt(next._spanStart) < groupEnd) {
-        group.push(j);
-      } else break;
-    }
-    if (group.length > 1) {
-      const groupId = `parallel_${i}`;
-      for (const idx of group) {
-        agentNodes[idx].parallelGroup = groupId;
-        agentNodes[idx].parallelSize = group.length;
-      }
-      i = group[group.length - 1]; // skip past the group
-    }
-  }
-
-  // Clean up internal span timing fields
-  for (const node of agentNodes) {
-    delete node._spanStart;
-    delete node._spanEnd;
+  // Build a TOOL-node lookup so the result-injection pass below can hydrate
+  // TOOL_RESULT blocks with status (success / error / duration) without
+  // re-scanning. Pairing on the FE then stays block-local.
+  const toolNodeByUseId = {};
+  for (const n of agentNodes) {
+    if (n.kind === 'TOOL' && n.toolUseId) toolNodeByUseId[n.toolUseId] = n;
   }
 
   // Inject tool_results from next request body's messages
@@ -601,11 +569,18 @@ function buildTurn(
       for (const block of node.blocks) {
         expanded.push(block);
         if (block.type === 'TOOL_USE' && resultTexts[block.id] !== undefined) {
+          const tn = toolNodeByUseId[block.id];
+          const errText = tn?.error || '';
+          const ok = tn ? (!errText && tn.success !== false) : true;
           expanded.push({
             type: 'TOOL_RESULT',
             id: block.id,
             name: block.name,
             text: resultTexts[block.id],
+            success: ok,
+            errorText: errText,
+            durationMs: tn?.durationMs ?? 0,
+            is_error: !ok || undefined,
           });
         }
       }
@@ -689,7 +664,30 @@ function buildTurn(
     }
   })(agentNodes);
 
-  // Clean up internal temp fields (recurses into nested AGENT.nodes)
+  // Parallel detection — structural, from the raw OTEL data path the CLI
+  // uses (the captured response body). One response body's content array
+  // with >=2 tool_use blocks IS a model-emitted parallel batch by Anthropic
+  // API design. We map each batch to its matching AgentNodes by the shared
+  // tool_use id.
+  //
+  // Recurses into nested AGENT.nodes so a sub-agent's own parallel batches
+  // get stamped at that scope.
+  (function stampParallelFromResponseBodies(nodes) {
+    for (const respBody of Object.values(responseBodies || {})) {
+      const content = Array.isArray(respBody?.content) ? respBody.content : [];
+      const toolUseIds = content
+        .filter((c) => c && c.type === 'tool_use' && c.id)
+        .map((c) => c.id);
+      if (toolUseIds.length >= 2) stampParallelGroup(nodes, toolUseIds);
+    }
+    for (const n of nodes) {
+      if (n.kind === 'AGENT' && Array.isArray(n.nodes)) {
+        stampParallelFromResponseBodies(n.nodes);
+      }
+    }
+  })(agentNodes);
+
+  // Clean up remaining internal temp fields (recurses into nested AGENT.nodes)
   (function cleanTempFields(nodes) {
     for (const node of nodes) {
       delete node._eventTime;

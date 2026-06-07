@@ -251,7 +251,7 @@ Every component is built from the same vocabulary: a tonal surface, a 1px rule b
 ### Workflow Node (graph nodes)
 - **Shape:** `var(--rounded.md)`, 1px `--rule` border + 3px **role-color left border** indicating node kind (cyan = LLM, phosphor = AGENT). The left-stripe pattern is the system's chosen way to encode semantic type; do not propagate to non-typed cards.
 - **Default:** console-steel background, soft text in header, mono data row below (model · duration · tokens — colored by role).
-- **Hover:** background shifts to iron; `translateY(-2px)` lift with bounce easing (`cubic-bezier(0.34, 1.56, 0.64, 1)`).
+- **Hover:** background shifts to iron; `translateY(-2px)` lift with ease-out-quart (`cubic-bezier(0.22, 1, 0.36, 1)`, exposed as `var(--ease-out)`). Never bounce/elastic — they feel dated.
 - **Selected:** phosphor glow per the Elevation section.
 - **Focus-visible:** 2px wire-cyan outline at 2px offset.
 

@@ -146,7 +146,7 @@ export function SessionList({ onSelect }) {
     <div className="error-state">
       <div className="error-state__icon">!</div>
       <div className="error-state__message">Failed to load sessions</div>
-      <div className="error-state__hint">{error} &mdash; is the Express server running on :3001?</div>
+      <div className="error-state__hint">{error}. Is the Express server running on :3001?</div>
     </div>
   );
   if (sessions.length === 0) return (
@@ -186,8 +186,9 @@ export function SessionList({ onSelect }) {
           {dropdownOpen && (
             <div className="session-filter__dropdown">
               {FILTER_OPTIONS.map((opt, i) => (
-                <div
+                <button
                   key={opt}
+                  type="button"
                   className={
                     'session-filter__option'
                     + (dateFilter === opt ? ' session-filter__option--active' : '')
@@ -197,7 +198,7 @@ export function SessionList({ onSelect }) {
                   onMouseEnter={() => setDropdownIdx(i)}
                 >
                   {opt}
-                </div>
+                </button>
               ))}
             </div>
           )}

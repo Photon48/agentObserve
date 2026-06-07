@@ -1,30 +1,10 @@
-import { useState } from 'react';
 import { formatCost, formatTokens, formatDuration } from '../utils/format.js';
-
-// Generic preview-with-toggle for any long text block. Renders the first
-// `previewLines` and offers a "show N more / collapse" toggle. Never silently
-// truncates. Used everywhere text might be long — prompts, thoughts, replies,
-// tool inputs, tool results.
-function CollapsibleText({ text, previewLines = 6, emptyLabel = '(empty)' }) {
-  const [expanded, setExpanded] = useState(false);
-  const lines = (text || '').split('\n');
-  const needsCollapse = lines.length > previewLines;
-  const displayed = (!needsCollapse || expanded)
-    ? (text || '')
-    : lines.slice(0, previewLines).join('\n');
-  return (
-    <>
-      <div className="conv-block__body">
-        {displayed || <span className="text-empty">{emptyLabel}</span>}
-      </div>
-      {needsCollapse && (
-        <button className="conv-block__toggle" onClick={() => setExpanded((e) => !e)}>
-          {expanded ? '▾ collapse' : `▸ show ${lines.length - previewLines} more lines`}
-        </button>
-      )}
-    </>
-  );
-}
+import { CollapsibleText } from './agentStep/CollapsibleText.jsx';
+import { ToolPair } from './agentStep/ToolPair.jsx';
+import { SubAgentPair } from './agentStep/SubAgentPair.jsx';
+import { ParallelCarousel } from './agentStep/ParallelCarousel.jsx';
+import { StatusChip } from './agentStep/StatusChip.jsx';
+import { buildRenderUnits, buildRenderUnitsFromNodes } from './agentStep/renderUnits.js';
 
 function PromptStep({ step }) {
   return (
@@ -38,6 +18,23 @@ function PromptStep({ step }) {
 // ── Conversation blocks ──────────────────────────────────────────────────────
 
 function ThoughtBlock({ block }) {
+  // Anthropic's extended-thinking is privacy-redacted upstream — the model
+  // emitted reasoning but content is withheld. Show a labeled badge instead
+  // of an "(empty)" CollapsibleText so the operator understands what's going
+  // on. Unredacted reasoning (rare but possible) renders normally.
+  if (block.redacted) {
+    return (
+      <div className="conv-block conv-block--thought conv-block--redacted">
+        <div className="conv-block__header">
+          ◈ THINKING
+          <span className="conv-block__badge"> · redacted by anthropic</span>
+        </div>
+        <div className="conv-block__body conv-block__body--dim">
+          (model emitted reasoning, content withheld upstream)
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="conv-block conv-block--thought">
       <div className="conv-block__header">◈ THINKING</div>
@@ -46,27 +43,12 @@ function ThoughtBlock({ block }) {
   );
 }
 
-function TextBlock({ block }) {
+function TextBlock({ block, model }) {
+  const label = model || 'ASSISTANT';
   return (
     <div className="conv-block conv-block--text">
-      <div className="conv-block__header">◆ CLAUDE</div>
+      <div className="conv-block__header">◆ {label}</div>
       <CollapsibleText text={block.text} previewLines={10} />
-    </div>
-  );
-}
-
-function ToolUseBlock({ block, timing }) {
-  let jsonFormatted = '';
-  try {
-    jsonFormatted = JSON.stringify(block.input, null, 2);
-  } catch {}
-  return (
-    <div className="conv-block conv-block--tool-use">
-      <div className="conv-block__header">
-        ⚙ TOOL_USE  {block.name}
-        {timing != null && <span className="conv-timing">{formatDuration(timing)}</span>}
-      </div>
-      <CollapsibleText text={jsonFormatted} previewLines={8} />
     </div>
   );
 }
@@ -85,15 +67,6 @@ function LLMTimingRow({ node }) {
   );
 }
 
-function ToolResultBlock({ block }) {
-  return (
-    <div className="conv-block conv-block--tool-result">
-      <div className="conv-block__header">↩ RESULT  {block.name}</div>
-      <CollapsibleText text={block.text} previewLines={6} />
-    </div>
-  );
-}
-
 function AgentResponseBlock({ block }) {
   return (
     <div className="conv-block conv-block--agent-response">
@@ -103,61 +76,105 @@ function AgentResponseBlock({ block }) {
   );
 }
 
-function ConvBlock({ block, timing }) {
+function TextUnitBlock({ block, model }) {
   switch (block.type) {
-    case 'THOUGHT':         return <ThoughtBlock block={block} />;
-    case 'TEXT':            return <TextBlock block={block} />;
-    case 'TOOL_USE':        return <ToolUseBlock block={block} timing={timing} />;
-    case 'TOOL_RESULT':     return <ToolResultBlock block={block} />;
-    case 'AGENT_RESPONSE':  return <AgentResponseBlock block={block} />;
+    case 'THOUGHT':        return <ThoughtBlock block={block} />;
+    case 'TEXT':           return <TextBlock block={block} model={model} />;
+    case 'AGENT_RESPONSE': return <AgentResponseBlock block={block} />;
     default: return null;
   }
 }
 
-function ConversationView({ blocks, toolTimingMap = {}, llmTimings = [], subAgentByToolUseId = {}, onZoomIntoSubAgent }) {
-  if (!blocks?.length) return null;
+function OrphanToolUseBlock({ useBlock, toolNode }) {
+  let inputText = '';
+  try { inputText = JSON.stringify(useBlock?.input, null, 2); } catch {}
+  return (
+    <div className="conv-block conv-block--tool-use conv-block--orphan">
+      <div className="conv-block__header">
+        ⚙ TOOL_USE  {useBlock?.name}
+        <span className="conv-block__orphan-tag" title="no matching tool_result">(no result)</span>
+      </div>
+      <CollapsibleText text={inputText} previewLines={8} />
+      {toolNode && (
+        <div className="conv-block__meta">
+          <StatusChip
+            success={!toolNode.error && toolNode.success !== false}
+            durationMs={toolNode.durationMs}
+            errorText={toolNode.error || ''}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
 
-  // Inject LLMTimingRow before each new generation group (THOUGHT/TEXT run)
-  const renderList = [];
-  let llmIdx = 0;
-  let inGenerationGroup = false;
-  for (let i = 0; i < blocks.length; i++) {
-    const b = blocks[i];
-    const isGenBlock = b.type === 'THOUGHT' || b.type === 'TEXT';
-    if (isGenBlock && !inGenerationGroup) {
-      if (llmIdx < llmTimings.length) {
-        renderList.push({ _llmTiming: true, node: llmTimings[llmIdx++], key: `llm-${llmIdx}` });
-      }
-      inGenerationGroup = true;
-    } else if (!isGenBlock) {
-      inGenerationGroup = false;
-    }
-    renderList.push({ ...b, _idx: i });
+function OrphanToolResultBlock({ block }) {
+  return (
+    <div className="conv-block conv-block--tool-result conv-block--orphan">
+      <div className="conv-block__header">
+        ↩ RESULT  {block?.name}
+        <span className="conv-block__orphan-tag" title="no matching tool_use">(unmatched)</span>
+      </div>
+      <CollapsibleText text={block?.text || ''} previewLines={6} />
+    </div>
+  );
+}
+
+function renderUnit(u, onZoomIntoSubAgent) {
+  switch (u.type) {
+    case 'llm-timing':
+      return <LLMTimingRow key={u.key} node={u.node} />;
+    case 'text':
+      return <TextUnitBlock key={u.key} block={u.block} model={u.model} />;
+    case 'tool-pair':
+      return (
+        <ToolPair
+          key={u.key}
+          useBlock={u.useBlock}
+          resultBlock={u.resultBlock}
+          toolNode={u.toolNode}
+        />
+      );
+    case 'sub-agent':
+      return (
+        <SubAgentPair
+          key={u.key}
+          useBlock={u.useBlock}
+          agentNode={u.agentNode}
+          onZoom={onZoomIntoSubAgent}
+        />
+      );
+    case 'parallel':
+      return (
+        <ParallelCarousel
+          key={u.key}
+          members={u.members}
+          siblings={u.siblings}
+          onZoomIntoSubAgent={onZoomIntoSubAgent}
+        />
+      );
+    case 'orphan-tool-use':
+      return <OrphanToolUseBlock key={u.key} useBlock={u.useBlock} toolNode={u.toolNode} />;
+    case 'orphan-tool-result':
+      return <OrphanToolResultBlock key={u.key} block={u.block} />;
+    case 'cascade-llm':
+      return <LLMNode key={u.key} node={u.node} />;
+    case 'cascade-hook':
+      return <HookNode key={u.key} node={u.node} />;
+    default: return null;
   }
+}
 
+function ConversationView({ blocks, toolNodeByToolUseId = {}, llmTimings = [], subAgentByToolUseId = {}, onZoomIntoSubAgent }) {
+  if (!blocks?.length) return null;
+  const units = buildRenderUnits(blocks, {
+    toolNodeByToolUseId,
+    subAgentByToolUseId,
+    llmTimings,
+  });
   return (
     <div className="conv-view">
-      {renderList.map((item) => {
-        if (item._llmTiming) {
-          return <LLMTimingRow key={item.key} node={item.node} />;
-        }
-        // If this TOOL_USE block corresponds to a promoted sub-agent,
-        // render the zoomable SubAgentNode card inline in place of the
-        // generic TOOL_USE block. This preserves chronological position
-        // within the conversation flow.
-        if (item.type === 'TOOL_USE' && item.id && subAgentByToolUseId[item.id]) {
-          const agentNode = subAgentByToolUseId[item.id];
-          return (
-            <SubAgentNode
-              key={`agent-${item._idx}`}
-              node={agentNode}
-              onZoom={onZoomIntoSubAgent}
-            />
-          );
-        }
-        const timing = item.type === 'TOOL_USE' ? toolTimingMap[item.id] : undefined;
-        return <ConvBlock key={item._idx} block={item} timing={timing} />;
-      })}
+      {units.map((u) => renderUnit(u, onZoomIntoSubAgent))}
     </div>
   );
 }
@@ -215,6 +232,15 @@ function LLMNode({ node }) {
     `dur: ${formatDuration(node.durationMs)}`,
   ].filter(Boolean).join('  ');
 
+  // Render the LLM_CALL's own blocks inline (THOUGHT + TEXT + AGENT_RESPONSE)
+  // so the cascade path shows the same conversation content the
+  // ConversationView path does. Without this, an Anthropic SDK turn that
+  // falls through to the cascade (no capturedBlocks and no flat blocks on
+  // child non-AGENT nodes) renders an empty card.
+  const inlineBlocks = (node.blocks || []).filter(
+    (b) => b.type === 'THOUGHT' || b.type === 'TEXT' || b.type === 'AGENT_RESPONSE',
+  );
+
   return (
     <div className="cascade-node cascade-node--llm">
       <div className="cascade-node__header">
@@ -222,6 +248,13 @@ function LLMNode({ node }) {
         {node.stopReason && <span className="cascade-node__meta">stop: {node.stopReason}</span>}
       </div>
       {meta && <div className="cascade-node__meta">{meta}</div>}
+      {inlineBlocks.length > 0 && (
+        <div className="cascade-node__blocks">
+          {inlineBlocks.map((b, i) => (
+            <TextUnitBlock key={`llm-b-${i}`} block={b} model={node.model} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -240,51 +273,6 @@ function HookNode({ node }) {
           {passed !== undefined ? (passed ? '✓ PASS' : '✗ FAIL') : ''}
         </span>
       </div>
-    </div>
-  );
-}
-
-function ToolNode({ node }) {
-  const decClass =
-    node.decision === 'accept' ? 'tool-decision--accept' :
-    node.decision === 'block' ? 'tool-decision--block' : 'tool-decision--unknown';
-
-  let jsonFormatted = node.toolInput || '';
-  try { jsonFormatted = JSON.stringify(JSON.parse(node.toolInput), null, 2); } catch {}
-
-  return (
-    <div className="cascade-node cascade-node--tool">
-      <div className="cascade-node__header">
-        <span><span style={{ color: 'var(--fg-cyan)' }}>⚙ TOOL</span>{'  '}{node.toolName}</span>
-        <span className={`tool-decision ${decClass}`}>
-          {(node.decision || 'unknown').toUpperCase()}{node.source ? ` [${node.source}]` : ''}
-        </span>
-      </div>
-      {jsonFormatted && (
-        <div className="cascade-node__input">
-          <CollapsibleText text={jsonFormatted} previewLines={8} />
-        </div>
-      )}
-      {node.toolOutput && (
-        <div className="cascade-node__output">
-          <CollapsibleText text={node.toolOutput} previewLines={6} emptyLabel="" />
-        </div>
-      )}
-      {(node.durationMs > 0 || node.toolResultSizeBytes > 0) && (
-        <div className="cascade-node__meta">
-          {node.durationMs > 0 ? `dur: ${formatDuration(node.durationMs)}  ` : ''}
-          {node.toolResultSizeBytes > 0 ? `result: ${node.toolResultSizeBytes} bytes` : ''}
-        </div>
-      )}
-      {node.error && (
-        <div className="cascade-node__error">{'✗'} {node.error}</div>
-      )}
-      {node.blockedDurationMs > 0 && (
-        <div className="cascade-node__blocked">
-          {'⏳'} waited {formatDuration(node.blockedDurationMs)} for user
-          {node.blockedDecision && ` → ${node.blockedDecision}`}
-        </div>
-      )}
     </div>
   );
 }
@@ -323,24 +311,6 @@ function SubAgentNode({ node, onZoom }) {
   );
 }
 
-function ParallelToolGroup({ nodes }) {
-  return (
-    <div className="cascade-parallel-group">
-      <div className="cascade-parallel-group__header">&#x21F6; PARALLEL ({nodes.length} tools)</div>
-      <div className="cascade-parallel-group__lanes">
-        {nodes.map((n, i) => <ToolNode key={i} node={n} />)}
-      </div>
-    </div>
-  );
-}
-
-function CascadeNode({ node, onZoomIntoSubAgent }) {
-  if (node.kind === 'LLM_CALL') return <LLMNode node={node} />;
-  if (node.kind === 'TOOL') return <ToolNode node={node} />;
-  if (node.kind === 'HOOK') return <HookNode node={node} />;
-  if (node.kind === 'AGENT') return <SubAgentNode node={node} onZoom={onZoomIntoSubAgent} />;
-  return null;
-}
 
 // When AgentStep is rendered for a sub-agent zoom level, conversation-block
 // view doesn't apply (blocks belong to the top-level AGENT's flat block list,
@@ -353,53 +323,23 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
   const nodes = step.nodes || [];
   const upstreamPre  = step.upstreamPre  || [];
   const upstreamPost = step.upstreamPost || [];
-  // Build timing maps from agentNodes
-  const toolTimingMap = {};
+
+  // Cross-reference indices used by buildRenderUnits to pair TOOL_USE
+  // blocks with their TOOL agentNode (for status / parallelGroup) and to
+  // splice promoted AGENT-kind sub-agents in at their spawning toolUseId.
+  const toolNodeByToolUseId = {};
+  const subAgentByToolUseId = {};
+  const subAgentNodes = [];
   const llmTimings = [];
   for (const node of nodes) {
-    if (node.kind === 'TOOL' && node.toolUseId && node.durationMs > 0) {
-      toolTimingMap[node.toolUseId] = node.durationMs;
+    if (node.kind === 'TOOL' && node.toolUseId) {
+      toolNodeByToolUseId[node.toolUseId] = node;
+    } else if (node.kind === 'AGENT') {
+      subAgentNodes.push(node);
+      if (node.toolUseId) subAgentByToolUseId[node.toolUseId] = node;
     } else if (node.kind === 'LLM_CALL') {
       llmTimings.push({ durationMs: node.durationMs, ttftMs: node.ttftMs, model: node.model });
     }
-  }
-
-  // Group consecutive TOOL nodes with matching parallelGroup — produces
-  // cascade-renderable items. Used by the cascade path AND as a sub-agent
-  // accessory list when the conversation view is otherwise active.
-  function buildCascadeItems(srcNodes) {
-    const items = [];
-    for (let i = 0; i < srcNodes.length; ) {
-      const node = srcNodes[i];
-      if (node.parallelGroup) {
-        const groupNodes = [];
-        const gid = node.parallelGroup;
-        while (i < srcNodes.length && srcNodes[i].parallelGroup === gid) {
-          groupNodes.push(srcNodes[i]);
-          i++;
-        }
-        items.push({ type: 'parallel', nodes: groupNodes, key: `pg-${gid}` });
-      } else {
-        items.push({ type: 'single', node, key: `n-${i}` });
-        i++;
-      }
-    }
-    return items;
-  }
-
-  // Render rule:
-  //  1. If we have conversation-style content (either pre-built
-  //     capturedBlocks or LLM_CALL.blocks on individual nodes), render
-  //     ConversationView with sub-agents spliced INLINE at the matching
-  //     TOOL_USE block (preserving chronological position in the flow).
-  //  2. Any AGENT-kind node whose toolUseId doesn't match a block is an
-  //     orphan — show those in a small fallback appendix below.
-  //  3. Only fall back to the cascade view when there is no conversational
-  //     content at all.
-  const subAgentNodes = nodes.filter((n) => n.kind === 'AGENT');
-  const subAgentByToolUseId = {};
-  for (const a of subAgentNodes) {
-    if (a.toolUseId) subAgentByToolUseId[a.toolUseId] = a;
   }
 
   function renderOrphanSubAgents(blocks) {
@@ -422,13 +362,29 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
     );
   }
 
+  // Cascade fallback: synthesize render units from agentNodes directly so
+  // ToolPair + ParallelCarousel still apply when no capturedBlocks exist.
+  function renderCascade(srcNodes) {
+    const units = buildRenderUnitsFromNodes(srcNodes);
+    return (
+      <div className="agent-cascade">
+        {units.map((u, i) => (
+          <div key={u.key}>
+            {renderUnit(u, onZoomIntoSubAgent)}
+            {i < units.length - 1 && <div className="cascade-connector">{'│'}<br />{'▼'}</div>}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   const agentContent = (() => {
     if (step.capturedBlocks?.length > 0) {
       return (
         <>
           <ConversationView
             blocks={step.capturedBlocks}
-            toolTimingMap={toolTimingMap}
+            toolNodeByToolUseId={toolNodeByToolUseId}
             llmTimings={llmTimings}
             subAgentByToolUseId={subAgentByToolUseId}
             onZoomIntoSubAgent={onZoomIntoSubAgent}
@@ -440,17 +396,14 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
     if (nodes.length === 0) {
       return <div className="text-dim">(no agent activity)</div>;
     }
-    // Compose conversation blocks from non-AGENT nodes — AGENT nodes are
-    // spliced into the stream at their tool_use_id match.
     const inlineBlockNodes = nodes.filter((n) => n.kind !== 'AGENT');
     const flatBlocks = inlineBlockNodes.flatMap((n) => n.blocks || []);
-    const hasBlocks = flatBlocks.length > 0;
-    if (hasBlocks) {
+    if (flatBlocks.length > 0) {
       return (
         <>
           <ConversationView
             blocks={flatBlocks}
-            toolTimingMap={toolTimingMap}
+            toolNodeByToolUseId={toolNodeByToolUseId}
             llmTimings={llmTimings}
             subAgentByToolUseId={subAgentByToolUseId}
             onZoomIntoSubAgent={onZoomIntoSubAgent}
@@ -459,19 +412,7 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
         </>
       );
     }
-    const cascadeItems = buildCascadeItems(nodes);
-    return (
-      <div className="agent-cascade">
-        {cascadeItems.map((item, i) => (
-          <div key={item.key}>
-            {item.type === 'parallel'
-              ? <ParallelToolGroup nodes={item.nodes} />
-              : <CascadeNode node={item.node} onZoomIntoSubAgent={onZoomIntoSubAgent} />}
-            {i < cascadeItems.length - 1 && <div className="cascade-connector">{'│'}<br />{'▼'}</div>}
-          </div>
-        ))}
-      </div>
-    );
+    return renderCascade(nodes);
   })();
 
   return (
@@ -527,7 +468,7 @@ export function StepPanel({ step }) {
       break;
     default:
       content = (
-        <pre style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
+        <pre className="json-dump">
           {JSON.stringify(step, null, 2)}
         </pre>
       );

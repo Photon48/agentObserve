@@ -214,11 +214,15 @@ function ToolRow({ tool, count, unused }) {
   function renderRow(name, prop, required, path) {
     const expandable = hasChildren(prop);
     const isOpen = openPaths.has(path);
+    const TopTag = expandable ? 'button' : 'div';
+    const topProps = expandable
+      ? { type: 'button', onClick: () => togglePath(path), 'aria-expanded': isOpen }
+      : {};
     return (
       <div key={path} className="tool-schema__row">
-        <div
+        <TopTag
           className={`tool-schema__row-top${expandable ? ' tool-schema__row-top--clickable' : ''}`}
-          onClick={expandable ? () => togglePath(path) : undefined}
+          {...topProps}
         >
           <span className="tool-schema__chevron" aria-hidden="true">
             {expandable ? (isOpen ? '▾' : '▸') : ''}
@@ -230,7 +234,7 @@ function ToolRow({ tool, count, unused }) {
               {required ? 'req' : 'opt'}
             </span>
           </span>
-        </div>
+        </TopTag>
         {prop.description && (
           <div className="tool-schema__desc">{prop.description}</div>
         )}
@@ -254,14 +258,16 @@ function ToolRow({ tool, count, unused }) {
 
   return (
     <div className="tool-sidebar__item">
-      <div
+      <button
+        type="button"
         className={`tool-sidebar__name${unused ? ' tool-sidebar__name--unused' : ''}`}
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
         <span className="tool-sidebar__chevron">{open ? '▾' : '▸'}</span>
         <span className="tool-sidebar__tool-name">{tool.name}</span>
         {count > 0 && <span className="tool-sidebar__count">×{count}</span>}
-      </div>
+      </button>
       {open && (
         <div className="tool-schema">
           {tool.description && (
@@ -301,32 +307,34 @@ function ToolDirectorySidebar({ tools, callCounts, emptyState, nodeName, mode, o
   return (
     <div className="tool-sidebar">
       <PanelHeader label={`TOOLS [${tools.length}]`} mode={mode} onStep={onStep} side="right" />
-      {emptyState === 'llm'
-        ? <div className="tool-sidebar__empty-state">
-            <span className="tool-sidebar__empty-label">{nodeName || 'LLM'}</span>
-            <span className="tool-sidebar__empty-desc">LLM nodes execute prompts directly.{'\n'}No tool bindings at this layer.</span>
-          </div>
-        : tools.length === 0
-          ? <div className="tool-sidebar__empty">— not available</div>
-          : <>
-              {called.length > 0 && (
-                <div className="tool-sidebar__section">
-                  <div className="tool-sidebar__section-head">CALLED · {called.length}</div>
-                  {called.map((t) => (
-                    <ToolRow key={`c-${t.name}`} tool={t} count={counts[t.name]} />
-                  ))}
-                </div>
-              )}
-              {unused.length > 0 && (
-                <div className="tool-sidebar__section">
-                  <div className="tool-sidebar__section-head">UNUSED · {unused.length}</div>
-                  {unused.map((t) => (
-                    <ToolRow key={`u-${t.name}`} tool={t} unused />
-                  ))}
-                </div>
-              )}
-            </>
-      }
+      <div className="tool-sidebar__body">
+        {emptyState === 'llm'
+          ? <div className="tool-sidebar__empty-state">
+              <span className="tool-sidebar__empty-label">{nodeName || 'LLM'}</span>
+              <span className="tool-sidebar__empty-desc">LLM nodes execute prompts directly.{'\n'}No tool bindings at this layer.</span>
+            </div>
+          : tools.length === 0
+            ? <div className="tool-sidebar__empty">not available</div>
+            : <>
+                {called.length > 0 && (
+                  <div className="tool-sidebar__section">
+                    <div className="tool-sidebar__section-head">CALLED · {called.length}</div>
+                    {called.map((t) => (
+                      <ToolRow key={`c-${t.name}`} tool={t} count={counts[t.name]} />
+                    ))}
+                  </div>
+                )}
+                {unused.length > 0 && (
+                  <div className="tool-sidebar__section">
+                    <div className="tool-sidebar__section-head">UNUSED · {unused.length}</div>
+                    {unused.map((t) => (
+                      <ToolRow key={`u-${t.name}`} tool={t} unused />
+                    ))}
+                  </div>
+                )}
+              </>
+        }
+      </div>
     </div>
   );
 }
@@ -494,7 +502,7 @@ export function DungeonView({ sessionId, onExit }) {
 
   if (loading) return (
     <div className="center-msg">
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+      <div className="loading-state">
         <div className="skeleton-row" style={{ border: 'none', justifyContent: 'center' }}>
           <div className="skeleton-cell skeleton-cell--lg" />
           <div className="skeleton-cell skeleton-cell--md" />

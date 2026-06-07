@@ -33,9 +33,9 @@ export function AsciiLine({ char = '─', variant = 'single', left, right }) {
 
 export function AsciiRow({ children }) {
   return (
-    <div style={{ display: 'flex' }}>
+    <div className="ascii-box__row">
       <span>│</span>
-      <span style={{ flex: 1, padding: '0 1ch' }}>{children}</span>
+      <span className="ascii-box__cell">{children}</span>
       <span>│</span>
     </div>
   );

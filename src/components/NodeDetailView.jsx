@@ -127,7 +127,7 @@ export function NodeDetailView({ node, agentStep, label, onZoomIntoSubAgent }) {
         <span className="detail-view__kind">{node.kind}</span>
         <span className="detail-view__label">{node.label}</span>
       </div>
-      <pre style={{ color: 'var(--fg-dim)', fontSize: 11 }}>
+      <pre className="json-dump">
         {JSON.stringify({ ...node, agentStepData: undefined }, null, 2)}
       </pre>
     </div>
