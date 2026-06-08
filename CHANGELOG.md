@@ -9,6 +9,31 @@ The release-notes section of each version is the source of truth for the
 
 ## [Unreleased]
 
+### Added — v1.0.0 highlights
+
+v1.0.0 promotes [1.0.0-rc.2](#100-rc2---2026-06-08) (legal foundation +
+Docker stack + release pipeline) to stable and adds:
+
+- **Update awareness.** The API service polls GitHub Releases on
+  startup and exposes the result at `GET /api/version`. The dashboard
+  renders a dismissible "vX.Y.Z available" banner with the one-line
+  upgrade command. Dismissals are per-version (dismissing v1.3 doesn't
+  suppress v1.4). `urgency: critical` in `manifest.json` makes the
+  banner non-dismissible. The check is opt-out via
+  `AGENTOBSERVE_UPDATE_SOURCE=disabled` and falls back silently on
+  network failure. Result is cached to `<data>/.update_cache.json`
+  for 6h so the dashboard never hammers GitHub.
+- **Two-part README quickstart.** Part A boots the dashboard in
+  three bash lines (Docker prereq only). Part B is three self-
+  contained instrumentation paths — LangChain / LangGraph, Anthropic
+  SDK / Claude Agent SDK, raw `claude` CLI — each standalone, no
+  cross-references between them, drops the `mkdir -p .claude` step,
+  drops the PyPI claim (SDK is local-install in v1).
+
+With v1.0.0, the four-year BSL clock for this version starts ticking.
+On the Change Date, v1.0.0 (and only this version) auto-converts to
+Apache License 2.0 per `LICENSE`.
+
 ## [1.0.0-rc.2] - 2026-06-08
 
 ### Added
