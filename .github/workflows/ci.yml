@@ -1,0 +1,42 @@
+# Copyright (c) 2026 Rishu Goyal. All rights reserved.
+# Licensed under the Business Source License 1.1.
+# See LICENSE in the project root for license terms.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  license-headers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify every source file carries the BSL copyright header
+        run: ./scripts/add-license-headers.sh --check
+
+  build-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [receiver, api, ui]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.component }} image (amd64, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.component }}.Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          tags: agentobserve-${{ matrix.component }}:ci

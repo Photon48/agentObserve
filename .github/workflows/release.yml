@@ -1,0 +1,159 @@
+# Copyright (c) 2026 Rishu Goyal. All rights reserved.
+# Licensed under the Business Source License 1.1.
+# See LICENSE in the project root for license terms.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the GitHub Release
+  packages: write   # push images to GHCR
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [receiver, api, ui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version + tags
+        id: vers
+        run: |
+          REF="${GITHUB_REF#refs/tags/v}"
+          OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER}/agentobserve-${{ matrix.component }}"
+          TAGS="${IMAGE}:${REF}"
+          # Only stable releases (X.Y.Z, no -rc/-alpha/-beta suffix) get the
+          # rolling :latest, :X, :X.Y tags.
+          if [[ "$REF" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            MAJOR="${REF%%.*}"
+            MINOR_TAIL="${REF#*.}"
+            MINOR="${MINOR_TAIL%%.*}"
+            TAGS="${TAGS}"$'\n'"${IMAGE}:${MAJOR}"$'\n'"${IMAGE}:${MAJOR}.${MINOR}"$'\n'"${IMAGE}:latest"
+          fi
+          {
+            echo "version=${REF}"
+            echo "tags<<EOF"
+            echo "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.component }}.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.vers.outputs.tags }}
+          provenance: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.vers.outputs.version }}
+            org.opencontainers.image.licenses=BUSL-1.1
+
+  create-release:
+    runs-on: ubuntu-latest
+    needs: build-images
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build manifest.json + release notes
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          MIN_SUPPORTED="$(cat MIN_SUPPORTED_VERSION 2>/dev/null || echo "0.1.0")"
+          MIN_SUPPORTED="$(echo -n "$MIN_SUPPORTED" | tr -d '[:space:]')"
+
+          # Urgency: scan the CHANGELOG section for an explicit marker;
+          # default to `recommended`. Set `urgency: critical` in the section
+          # body to force a non-dismissible banner in the dashboard.
+          URGENCY="recommended"
+          if awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture && /urgency:[[:space:]]*critical/ { found=1 }
+            END { exit (found ? 0 : 1) }
+          ' CHANGELOG.md; then
+            URGENCY="critical"
+          fi
+
+          cat > manifest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "minSupportedVersion": "${MIN_SUPPORTED}",
+            "upgradeUrgency": "${URGENCY}",
+            "releaseNotesUrl": "https://github.com/${{ github.repository }}/releases/tag/v${VERSION}",
+            "upgradeCommand": "docker compose pull && docker compose up -d",
+            "flags": {}
+          }
+          EOF
+
+          # Extract the CHANGELOG section for this version → release notes body.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { capture=1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+
+          # Fallback if no section was found.
+          if [ ! -s release-notes.md ]; then
+            echo "Release v${VERSION}" > release-notes.md
+            echo "" >> release-notes.md
+            echo "See CHANGELOG.md for details." >> release-notes.md
+          fi
+
+          {
+            echo "## Container images"
+            echo ""
+            OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+            for c in receiver api ui; do
+              echo "- \`ghcr.io/${OWNER}/agentobserve-${c}:${VERSION}\`"
+            done
+            echo ""
+            echo "## Upgrade"
+            echo ""
+            echo "\`\`\`bash"
+            echo "docker compose pull && docker compose up -d"
+            echo "\`\`\`"
+          } >> release-notes.md
+
+          echo "--- manifest.json ---"
+          cat manifest.json
+          echo "--- release-notes.md ---"
+          cat release-notes.md
+
+      - name: Detect prerelease
+        id: prerelease
+        run: |
+          REF="${GITHUB_REF#refs/tags/v}"
+          if [[ "$REF" =~ -(rc|alpha|beta) ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          files: manifest.json
+          prerelease: ${{ steps.prerelease.outputs.value }}
