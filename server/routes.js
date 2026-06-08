@@ -3,8 +3,12 @@
 // See LICENSE in the project root for license terms.
 import express from 'express';
 
-export function createRouter(getSessions) {
+export function createRouter(getSessions, getVersionInfo) {
   const router = express.Router();
+
+  router.get('/version', (req, res) => {
+    res.json(getVersionInfo());
+  });
 
   // Summaries sorted newest-first, no turns
   router.get('/sessions', (req, res) => {

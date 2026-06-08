@@ -31,6 +31,11 @@ services:
     environment:
       TELEMETRY_DIR: /data
       GITHUB_REPO: Photon48/agentObserve
+      # Pass-throughs (unset by default; set in the host shell to override).
+      #   AGENTOBSERVE_UPDATE_SOURCE      `github` | `disabled`
+      #   AGENTOBSERVE_VERSION_OVERRIDE   simulate an older local install
+      AGENTOBSERVE_UPDATE_SOURCE: ${AGENTOBSERVE_UPDATE_SOURCE:-}
+      AGENTOBSERVE_VERSION_OVERRIDE: ${AGENTOBSERVE_VERSION_OVERRIDE:-}
     depends_on:
       - receiver
     restart: unless-stopped

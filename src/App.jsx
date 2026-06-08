@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import { SessionList } from './components/SessionList.jsx';
 import { DungeonView } from './components/DungeonView.jsx';
+import { UpdateBanner } from './components/UpdateBanner.jsx';
 import './styles/dungeon.css';
 
 export default function App() {
@@ -24,5 +25,10 @@ export default function App() {
     return <DungeonView sessionId={sessionId} onExit={handleExit} />;
   }
 
-  return <SessionList onSelect={handleSelect} />;
+  return (
+    <>
+      <UpdateBanner />
+      <SessionList onSelect={handleSelect} />
+    </>
+  );
 }
