@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Rishu Goyal. All rights reserved.
+// Licensed under the Business Source License 1.1.
+// See LICENSE in the project root for license terms.
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -8,7 +11,7 @@ import { buildSessions } from './parser.js';
 import { createRouter } from './routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TELEMETRY_DIR = path.resolve(__dirname, '../telemetry');
+const TELEMETRY_DIR = process.env.TELEMETRY_DIR ?? path.resolve(__dirname, '../telemetry');
 
 function loadSessions() {
   const { rawBySession, orphanSpans } = loadAllSessions(TELEMETRY_DIR);

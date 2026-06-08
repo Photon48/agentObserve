@@ -1,0 +1,47 @@
+# Copyright (c) 2026 Rishu Goyal. All rights reserved.
+# Licensed under the Business Source License 1.1.
+# See LICENSE in the project root for license terms.
+
+# Production-ish stack: builds images locally for now.
+# Phase 2 will switch `build:` → `image: ghcr.io/photon48/agentobserve-*:VERSION`.
+
+services:
+  receiver:
+    build:
+      context: .
+      dockerfile: docker/receiver.Dockerfile
+    container_name: agentobserve-receiver
+    ports:
+      - "4318:4318"
+    volumes:
+      - ./telemetry:/data
+    environment:
+      TELEMETRY_DIR: /data
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: agentobserve-api
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./telemetry:/data
+    environment:
+      TELEMETRY_DIR: /data
+      GITHUB_REPO: Photon48/agentObserve
+    depends_on:
+      - receiver
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: .
+      dockerfile: docker/ui.Dockerfile
+    container_name: agentobserve-ui
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+    restart: unless-stopped

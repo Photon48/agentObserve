@@ -1,0 +1,46 @@
+# Copyright (c) 2026 Rishu Goyal. All rights reserved.
+
+# Keep Docker build contexts small + reproducible.
+
+# Dependencies / build artifacts (rebuilt inside container)
+node_modules
+.venv
+__pycache__
+*.pyc
+dist
+
+# Local state, never wanted in image
+.git
+.gitignore
+.pids
+.logs
+telemetry
+data
+.update_cache.json
+
+# IDE / agent state
+.claude
+.agents
+.impeccable
+.cursor
+.vscode
+.idea
+
+# Docs that bloat the api/receiver image (UI build needs none of them either)
+*.md
+!cli/README.md
+
+# Files that belong only to specific build contexts.
+# Keep docker/ in context — ui.Dockerfile COPYs docker/ui/nginx.conf.
+docker-compose*.yml
+.dockerignore
+.github
+Makefile
+
+# Legacy / unused
+docs
+futureAddition
+handoff
+PRODUCT.md
+DESIGN.md
+CLAUDE.md

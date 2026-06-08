@@ -13,32 +13,41 @@ OTEL Receiver (:4318)  -->  Express API (:3001)  -->  React UI (:5173)
 
 ## Quick Start
 
-### Prerequisites
+### Prerequisite
 
-- **Node.js** >= 18
-- **Python** >= 3.11
-- **uv** ([install](https://docs.astral.sh/uv/getting-started/installation/))
+- **Docker** ([install](https://docs.docker.com/get-docker/))
 
-### Setup
+### Run the dashboard
 
 ```bash
-git clone https://github.com/anthropics/agentObserve.git
+git clone https://github.com/Photon48/agentObserve.git
 cd agentObserve
-make setup    # creates Python venv, installs all dependencies
-make start    # starts all 3 services
+docker compose up -d
 ```
 
 Open **http://localhost:5173** to view the dashboard.
+
+Telemetry persists in `./telemetry/` on the host (mounted into the containers as `/data`), so sessions survive restarts.
 
 ### Service Management
 
 | Command | Description |
 |---|---|
-| `make start` | Start all services |
-| `make stop` | Stop all services |
-| `make restart` | Restart all services |
-| `make status` | Show running/stopped state |
-| `make logs` | Tail logs from all services |
+| `docker compose up -d` | Start all 3 services in the background |
+| `docker compose down` | Stop and remove containers |
+| `docker compose restart` | Restart all services |
+| `docker compose ps` | Show running services and ports |
+| `docker compose logs -f` | Tail logs from all services |
+
+### Hacking on agentObserve itself
+
+For hot-reload development (edit code, see changes instantly):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+This swaps the nginx UI for the Vite dev server, runs the API with `node --watch`, and runs the receiver with `uvicorn --reload`. Source files are bind-mounted from the host.
 
 ## Instrument Your Agent
 
@@ -195,3 +204,29 @@ agentObserve uses an adapter pattern to support different frameworks. To add a n
 3. Register it in `server/adapters/index.js`
 
 See `server/adapters/langchain.js` for a complete example.
+
+## License & Copyright
+
+agentObserve is **Copyright (c) 2026 Rishu Goyal** and licensed under the
+[Business Source License 1.1](LICENSE) (BSL 1.1).
+
+**What that means in plain English:**
+
+- ✅ Free to **self-host, modify, fork, and embed** agentObserve inside your
+  own products, internal tooling, and customer-facing services — including
+  commercial ones.
+- ✅ Free to use the **client SDK (`agentobserve` on PyPI)** in any agent
+  project, commercial or otherwise.
+- ❌ You **cannot offer agentObserve itself as a competing hosted or managed
+  service** to third parties. This restriction exists so the project can
+  sustain a paid managed-service tier that funds open development.
+- 🔄 Each released version **automatically converts to Apache License 2.0**
+  four years after its publication date. Anything in this repo dated four
+  years ago is, today, fully Apache-2.0 — no strings attached.
+
+If your intended use sits in a grey area, or you need a license that permits
+running agentObserve as a hosted service for your customers, contact
+**rishu.goyal433@gmail.com** for commercial licensing.
+
+The full BSL 1.1 license text is in [LICENSE](LICENSE). Third-party
+component notices are in [NOTICE](NOTICE).
