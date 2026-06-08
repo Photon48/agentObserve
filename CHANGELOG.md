@@ -9,6 +9,8 @@ The release-notes section of each version is the source of truth for the
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] - 2026-06-08
+
 ### Added
 - BSL 1.1 LICENSE, COPYRIGHT, NOTICE, and per-file copyright headers
   establishing Rishu Goyal as Licensor of agentObserve. Each version
