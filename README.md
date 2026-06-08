@@ -13,9 +13,11 @@ your agent  -->  Receiver (:4318)  -->  API (:3001)  -->  Dashboard (:5173)
 
 ---
 
-## Part A — Run the dashboard
+## Quickstart
 
-Prereq: **Docker** ([install](https://docs.docker.com/get-docker/)). No Node, Python, or `uv` required.
+### 1. Start the dashboard
+
+Prereq: **Docker** ([install](https://docs.docker.com/get-docker/)).
 
 ```bash
 git clone https://github.com/Photon48/agentObserve.git
@@ -23,45 +25,22 @@ cd agentObserve
 docker compose up -d
 ```
 
-Open **http://localhost:5173**.
+Open **http://localhost:5173**. Telemetry persists in `./telemetry/` and survives restarts.
 
-Telemetry persists in `./telemetry/` on the host (mounted into the containers as `/data`), so sessions survive restarts and reboots.
+### 2. Connect your agent
 
-### Lifecycle
-
-| Command | What it does |
-|---|---|
-| `docker compose up -d` | Start all 3 services in the background |
-| `docker compose down` | Stop and remove containers |
-| `docker compose restart` | Restart all services |
-| `docker compose ps` | Show running services and their ports |
-| `docker compose logs -f` | Tail logs from all services |
-| `docker compose pull && docker compose up -d` | Upgrade to the latest released images |
-
-### Hacking on agentObserve itself
-
-For hot-reload development — edit code on the host, see changes instantly in the running stack:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up
-```
-
-The dev override swaps nginx for the Vite dev server, runs the API under `node --watch`, and runs the receiver with `uvicorn --reload`. All three source trees are bind-mounted from the host.
+Pick the section that matches your framework.
 
 ---
 
-## Part B — Send your agent's traces in
-
-Three self-contained paths. **Pick the one that matches what you're running** — each block is standalone, no cross-references.
-
-### B.1 — LangChain / LangGraph
+### LangChain / LangGraph
 
 ```bash
 # from your agent project's venv
 pip install /path/to/agentObserve/cli[langchain]
 ```
 
-Set these env vars before importing LangChain (in code or in your shell):
+Set these env vars before importing LangChain:
 
 ```bash
 export AGENTOBSERVE_ENABLED=1
@@ -72,8 +51,6 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 ```
 
 Run your agent. Traces appear at http://localhost:5173.
-
-LangSmith's built-in OTEL exporter handles routing — no code changes anywhere in your graph.
 
 **Grouping non-graph LLM calls into the same trace.** If you call `.invoke()` *outside* the LangGraph context (guardrails, NER, post-processing), wrap your request handler with `@traceable`:
 
@@ -86,7 +63,9 @@ async def handle_request(...):
     ...
 ```
 
-### B.2 — Anthropic SDK / Claude Agent SDK
+---
+
+### Anthropic SDK / Claude Agent SDK
 
 ```bash
 # from your agent project's venv
@@ -135,12 +114,14 @@ async for msg in query(prompt="Hello!", options=options):
     print(msg)
 ```
 
-### B.3 — Raw Claude Code CLI
+---
 
-**No Python install needed.** Add an `"env"` block to your existing `.claude/settings.json` — the same file you already use for hooks, plugins, and permissions. Two scopes:
+### Raw Claude Code CLI
+
+**No Python install needed.** Add an `"env"` block to your `.claude/settings.json` — the same file you already use for hooks, plugins, and permissions. Two scopes:
 
 - **Project-level** — `<your-project>/.claude/settings.json`. Applies only when `claude` runs from that directory.
-- **User-level** — `~/.claude/settings.json`. Applies to every `claude` session, regardless of cwd.
+- **User-level** — `~/.claude/settings.json`. Applies to every `claude` session.
 
 ```json
 {
@@ -164,20 +145,6 @@ If `settings.json` already exists, add the `env` key alongside whatever else is 
 
 Restart `claude`. Traces flow.
 
-**Why `OTEL_LOG_RAW_API_BODIES=file:<dir>` and not `=1`:** the inline form caps each body at 60 KB, which truncates the `tools` array off the end of any multi-turn conversation and leaves the dashboard without tool descriptions or input schemas. File mode writes untruncated bodies to disk; the receiver moves them into `telemetry/<session>/api_bodies/`.
-
----
-
-## Updates
-
-On startup, the API service polls GitHub for the latest release of agentObserve and exposes the result at `GET /api/version`. The dashboard renders a dismissible banner at the top whenever you're behind, including the one-line upgrade command. Dismissals are per-version — dismissing v1.3.0 doesn't suppress v1.4.0.
-
-To suppress the check entirely:
-
-```bash
-AGENTOBSERVE_UPDATE_SOURCE=disabled docker compose up -d
-```
-
 ---
 
 ## How it works
@@ -188,16 +155,6 @@ AGENTOBSERVE_UPDATE_SOURCE=disabled docker compose up -d
 4. The **React dashboard** fetches sessions from the API and renders workflow graphs, agent-step cascades, timing bars, and token / cost summaries.
 
 Everything stays on your machine.
-
-## Adding adapter support
-
-agentObserve uses an adapter pattern so new frameworks can plug in without touching shared code. To add one:
-
-1. Create `server/adapters/<name>.js`.
-2. Export `FRAMEWORK`, `canHandle(rawData)`, and `buildSession(sessionId, rawData, orphanSpans)`.
-3. Register it in `server/adapters/index.js`.
-
-See `server/adapters/langchain.js` for the most complete reference (handles structured outputs, parallel tool calls, sub-agents, and the LangSmith-vs-OTEL attribute split).
 
 ## License & copyright
 
