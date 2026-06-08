@@ -9,6 +9,31 @@ The release-notes section of each version is the source of truth for the
 
 ## [Unreleased]
 
+### Fixed
+- **Update checker bypasses GitHub's CDN cache.** v1.0.0 fetched
+  `manifest.json` via `asset.browser_download_url`, which is served by
+  a CDN that caches even with `cache-control: no-cache`. If a manifest
+  is replaced after publish (via `gh release upload --clobber`), the
+  CDN can serve the stale payload to dashboards for hours. The
+  checker now uses the REST asset endpoint (`asset.url` with
+  `Accept: application/octet-stream`), which returns the current
+  asset content directly — fixes propagate immediately.
+- **Release workflow's urgency marker no longer matches prose.** The
+  regex was `urgency:\s*critical` against the whole CHANGELOG section,
+  which fired on any sentence describing the marker itself (caught
+  during the v1.0.0 cut). Now requires `<!-- urgency: critical -->`
+  alone on its own line — invisible in rendered release notes and
+  isolated from documentation prose.
+
+### Note on v1.0.0
+The v1.0.0 `manifest.json` was briefly published with `upgradeUrgency:
+critical` because the original regex matched the phrase explaining
+what the marker does. The asset has been re-uploaded with the
+correct `recommended` urgency, but dashboards that polled GitHub
+during the window may have seen a non-dismissible banner. The
+v1.0.1 fix above ensures subsequent post-publish fixes propagate
+without CDN delay.
+
 ## [1.0.0] - 2026-06-08
 
 ### Added — v1.0.0 highlights

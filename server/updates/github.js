@@ -64,7 +64,14 @@ async function fetchLatestManifest() {
 
   const asset = (release.assets ?? []).find((a) => a.name === 'manifest.json');
   if (asset) {
-    const manifest = await fetchJSON(asset.browser_download_url);
+    // Use the REST asset URL (asset.url) with octet-stream Accept instead of
+    // browser_download_url. The browser URL goes through a CDN that caches
+    // even with `cache-control: no-cache`, which means a fix uploaded via
+    // `gh release upload --clobber` can be invisible to dashboards for hours.
+    // The REST endpoint returns the fresh asset content directly.
+    const manifest = await fetchJSON(asset.url, {
+      Accept: 'application/octet-stream',
+    });
     if (manifest) return manifest;
   }
 
@@ -84,7 +91,7 @@ async function fetchLatestAnyRelease() {
   return Array.isArray(list) && list.length > 0 ? list[0] : null;
 }
 
-async function fetchJSON(url) {
+async function fetchJSON(url, extraHeaders = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -92,7 +99,9 @@ async function fetchJSON(url) {
       headers: {
         'User-Agent': 'agentObserve-update-check',
         Accept: 'application/vnd.github+json',
+        ...extraHeaders,
       },
+      redirect: 'follow',
       signal: controller.signal,
     });
     if (!res.ok) return null;
