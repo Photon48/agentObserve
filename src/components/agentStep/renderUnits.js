@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Rishu Goyal. All rights reserved.
+// Licensed under the Business Source License 1.1.
+// See LICENSE in the project root for license terms.
 // Render-unit pre-pass.
 //
 // Transforms the AGENT step's flat block stream into a list of typed render

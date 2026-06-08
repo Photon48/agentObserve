@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Rishu Goyal. All rights reserved.
+// Licensed under the Business Source License 1.1.
+// See LICENSE in the project root for license terms.
 import { formatCost, formatTokens, formatDuration } from '../utils/format.js';
 import { CollapsibleText } from './agentStep/CollapsibleText.jsx';
 import { ToolPair } from './agentStep/ToolPair.jsx';

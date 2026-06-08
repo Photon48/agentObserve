@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Rishu Goyal. All rights reserved.
+// Licensed under the Business Source License 1.1.
+// See LICENSE in the project root for license terms.
 export function formatCost(usd) {
   if (usd === 0) return '$0.0000';
   if (usd < 0.0001) return `$${usd.toFixed(6)}`;

@@ -1,0 +1,53 @@
+agentObserve
+Copyright (c) 2026 Rishu Goyal
+
+This product includes software developed under the Business Source License 1.1.
+See LICENSE in this repository for the full license text.
+
+------------------------------------------------------------
+Third-party software notices
+------------------------------------------------------------
+
+This distribution bundles or depends on the following third-party software,
+each subject to its own license. agentObserve is not affiliated with any of
+the projects below, and their inclusion does not imply endorsement.
+
+PYTHON (receiver + client SDK)
+------------------------------------------------------------
+- FastAPI                              MIT License
+- Uvicorn                              BSD-3-Clause
+- Starlette                            BSD-3-Clause
+- Pydantic                             MIT License
+- OpenTelemetry API / SDK              Apache-2.0
+- OpenTelemetry OTLP Exporter (HTTP)   Apache-2.0
+- OpenTelemetry Proto                  Apache-2.0
+- opentelemetry-instrumentation-*      Apache-2.0
+- protobuf                             BSD-3-Clause
+- hatchling                            MIT License
+- hatch-autorun                        MIT License
+- langsmith[otel]                      MIT License (optional extra)
+- langchain-core                       MIT License (optional extra)
+
+NODE.JS (API server)
+------------------------------------------------------------
+- express                              MIT License
+- cors                                 MIT License
+
+REACT / FRONTEND (UI)
+------------------------------------------------------------
+- react / react-dom                    MIT License
+- vite                                 MIT License
+- @vitejs/plugin-react                 MIT License
+
+INFRASTRUCTURE / RUNTIME
+------------------------------------------------------------
+- Docker base images (python:3.12-slim, node:20-alpine, nginx:alpine)
+  are subject to their respective upstream licenses; see the image
+  manifests on Docker Hub for current notices.
+
+------------------------------------------------------------
+Full third-party license texts are available in the upstream
+repositories of each component. If you redistribute agentObserve in
+binary form (e.g. our published container images), this NOTICE file
+travels with the distribution as required by the contributing
+Apache-2.0 licenses above.

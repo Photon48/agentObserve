@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Rishu Goyal. All rights reserved.
+// Licensed under the Business Source License 1.1.
+// See LICENSE in the project root for license terms.
 import { useLayoutEffect, useRef, useState } from 'react';
 import { ToolPair } from './ToolPair.jsx';
 import { SubAgentPair } from './SubAgentPair.jsx';
