@@ -9,6 +9,8 @@ The release-notes section of each version is the source of truth for the
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-08
+
 ### Added — v1.0.0 highlights
 
 v1.0.0 promotes [1.0.0-rc.2](#100-rc2---2026-06-08) (legal foundation +
