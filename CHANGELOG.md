@@ -20,8 +20,9 @@ Docker stack + release pipeline) to stable and adds:
   startup and exposes the result at `GET /api/version`. The dashboard
   renders a dismissible "vX.Y.Z available" banner with the one-line
   upgrade command. Dismissals are per-version (dismissing v1.3 doesn't
-  suppress v1.4). `urgency: critical` in `manifest.json` makes the
-  banner non-dismissible. The check is opt-out via
+  suppress v1.4). Critical releases (banner non-dismissible) are opted
+  in per-release by adding an `<!-- urgency: critical -->` HTML comment
+  to the CHANGELOG section. The check is opt-out via
   `AGENTOBSERVE_UPDATE_SOURCE=disabled` and falls back silently on
   network failure. Result is cached to `<data>/.update_cache.json`
   for 6h so the dashboard never hammers GitHub.

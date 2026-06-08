@@ -83,13 +83,16 @@ jobs:
           MIN_SUPPORTED="$(echo -n "$MIN_SUPPORTED" | tr -d '[:space:]')"
 
           # Urgency: scan the CHANGELOG section for an explicit marker;
-          # default to `recommended`. Set `urgency: critical` in the section
-          # body to force a non-dismissible banner in the dashboard.
+          # default to `recommended`. To force a non-dismissible banner add
+          # `<!-- urgency: critical -->` on its own line inside the version's
+          # CHANGELOG section. The HTML-comment form is invisible in the
+          # rendered release notes and isolated enough that prose can talk
+          # about urgency without tripping the scanner.
           URGENCY="recommended"
           if awk -v v="$VERSION" '
             $0 ~ "^## \\[" v "\\]" { capture=1; next }
             capture && /^## \[/ { exit }
-            capture && /urgency:[[:space:]]*critical/ { found=1 }
+            capture && /^[[:space:]]*<!--[[:space:]]*urgency:[[:space:]]*critical[[:space:]]*-->[[:space:]]*$/ { found=1 }
             END { exit (found ? 0 : 1) }
           ' CHANGELOG.md; then
             URGENCY="critical"
