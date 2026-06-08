@@ -5,7 +5,7 @@ const KIND_COLORS = {
   UPSTREAM_LLM: 'var(--fg-cyan)',
   AGENT: 'var(--fg-green)',
   DOWNSTREAM_LLM: 'var(--fg-cyan)',
-  PIPELINE_MEMBER: 'rgba(88, 166, 255, 0.5)',
+  PIPELINE_MEMBER: 'color-mix(in oklab, var(--fg-cyan) 55%, transparent)',
 };
 
 export function SvgConnections({ groups, positions, selectedGroupIdx, selectedNodeIdx, hoveredGroupIdx, hoveredNodeIdx }) {

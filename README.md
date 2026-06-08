@@ -4,7 +4,7 @@ Agent observability platform — visualizes OpenTelemetry traces from AI agent f
 
 ![agentObserve Dashboard](docs/dashboard.png)
 
-Supports **LangChain / LangGraph**, the **Anthropic SDK / Claude Agent SDK**, and the **raw `claude` CLI**.
+Supports **LangChain / LangGraph**, the **Anthropic SDK / Claude Agent SDK**, and **Claude Code**.
 
 ```
 your agent  -->  Receiver (:4318)  -->  API (:3001)  -->  Dashboard (:5173)
@@ -22,10 +22,35 @@ Prereq: **Docker** ([install](https://docs.docker.com/get-docker/)).
 ```bash
 git clone https://github.com/Photon48/agentObserve.git
 cd agentObserve
-docker compose up -d
+make upd
 ```
 
 Open **http://localhost:5173**. Telemetry persists in `./telemetry/` and survives restarts.
+
+#### Commands
+
+The `Makefile` wraps `docker compose` with one-letter suffixes — `d` = detached, `b` = (re)build:
+
+| Command | What it does |
+|---|---|
+| `make up` | Foreground, no rebuild. Streams logs from the current images. |
+| `make upd` | Detached, no rebuild. **Use this for day-to-day starts.** |
+| `make upb` | Foreground, **rebuild** images from source, then start. Prunes dangling images. |
+| `make upbd` | Detached, **rebuild** images from source, then start. Prunes dangling images. **Use this to upgrade.** |
+| `make down` | Stop and remove containers. Data in `./telemetry/` is preserved. |
+
+The `--build` flag is what tells Docker to pick up source changes; without it, `docker compose up` reuses the existing image and you keep seeing the old build. The `b` shortcuts always rebuild, and follow up with `docker image prune -f` so the previous build's untagged layers don't pile up.
+
+### Upgrading
+
+When a new version drops, from your `agentObserve/` checkout:
+
+```bash
+git pull
+make upbd
+```
+
+That rebuilds all three images against the new source, replaces the running containers in place, and removes the now-untagged previous images. Same single port (5173), no manual cleanup.
 
 ### 2. Connect your agent
 
@@ -91,32 +116,9 @@ export OTEL_LOG_TOOL_CONTENT=1
 export OTEL_LOG_RAW_API_BODIES=file:/tmp/agentobserve_bodies
 ```
 
-If you spawn `claude` via the Python SDK, mirror the same env vars into `ClaudeCodeOptions.env` — the SDK runs the CLI in a subprocess that doesn't inherit your shell exports:
-
-```python
-from claude_code_sdk import ClaudeCodeOptions, query
-
-options = ClaudeCodeOptions(
-    max_turns=10,
-    env={
-        "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
-        "OTEL_METRICS_EXPORTER": "otlp",
-        "OTEL_LOGS_EXPORTER": "otlp",
-        "OTEL_TRACES_EXPORTER": "otlp",
-        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
-        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-        "OTEL_LOG_RAW_API_BODIES": "file:/tmp/agentobserve_bodies",
-    },
-)
-
-async for msg in query(prompt="Hello!", options=options):
-    print(msg)
-```
-
 ---
 
-### Raw Claude Code CLI
+### Claude Code
 
 **No Python install needed.** Add an `"env"` block to your `.claude/settings.json` — the same file you already use for hooks, plugins, and permissions. Two scopes:
 
