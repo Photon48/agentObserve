@@ -9,6 +9,8 @@ The release-notes section of each version is the source of truth for the
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-08
+
 ### Fixed
 - **Update checker bypasses GitHub's CDN cache.** v1.0.0 fetched
   `manifest.json` via `asset.browser_download_url`, which is served by
