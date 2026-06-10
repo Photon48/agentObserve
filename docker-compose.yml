@@ -15,6 +15,11 @@ services:
       - "4318:4318"
     volumes:
       - ./telemetry:/data
+      # Claude Code (host process) writes raw API bodies here when
+      # OTEL_LOG_RAW_API_BODIES=file:/tmp/agentobserve_bodies. Mounted at the
+      # identical path so the body_ref attributes in incoming logs resolve and
+      # _relocate_body_refs can move the files into telemetry/<session>/.
+      - /tmp/agentobserve_bodies:/tmp/agentobserve_bodies
     environment:
       TELEMETRY_DIR: /data
     restart: unless-stopped

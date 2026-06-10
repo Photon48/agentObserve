@@ -24,6 +24,16 @@ function readJsonFile(filePath) {
   }
 }
 
+// body_ref paths are absolute paths written by whichever receiver process
+// handled the log — the host (native uvicorn) or a container (where the
+// telemetry dir is /data). Either prefix may not exist in THIS process, so
+// resolve against the file's canonical home, telemetry/<session>/api_bodies/
+// <basename>, before falling back to the literal path.
+function readBodyRefFile(telemetryDir, sessionId, refPath) {
+  const local = path.join(telemetryDir, sessionId, 'api_bodies', path.basename(refPath));
+  return readJsonFile(local) ?? readJsonFile(refPath);
+}
+
 // OTEL_LOG_RAW_API_BODIES inline bodies may contain unescaped control characters
 // (literal newlines/tabs inside JSON string values). Sanitize before parsing.
 function safeParseBody(str) {
@@ -178,7 +188,7 @@ export function loadAllSessions(telemetryDir) {
 
   // Resolve body refs: read each file and store in the session map
   for (const { sessionId, requestId, filePath, kind } of pendingBodyRefs) {
-    const parsed = readJsonFile(filePath);
+    const parsed = readBodyRefFile(telemetryDir, sessionId, filePath);
     if (!parsed) continue;
     const session = rawBySession[sessionId];
     if (!session) continue;
@@ -228,7 +238,7 @@ export function loadAllSessions(telemetryDir) {
       if (!respArr || idx >= respArr.length) continue;
       const requestId = respArr[idx].requestId;
       const parsed = pending.bodyRef
-        ? readJsonFile(pending.bodyRef)
+        ? readBodyRefFile(telemetryDir, pending.sessionId, pending.bodyRef)
         : safeParseBody(pending.body);
       if (parsed) {
         const session = rawBySession[pending.sessionId];
