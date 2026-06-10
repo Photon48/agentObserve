@@ -4,17 +4,13 @@
 import { CollapsibleText } from './CollapsibleText.jsx';
 import { StatusChip } from './StatusChip.jsx';
 import { formatDuration } from '../../utils/format.js';
+import { formatToolInput, prettifyMaybeJson } from '../../utils/prettyJson.js';
 
 // Sub-agent (Task tool call) rendered as a unified bracket-rail pair just
 // like a regular tool — input on top, status chip in the middle, output on
 // the bottom. The output is the sub-agent's *final response* derived from
 // its own block tree; the nested cascade is never inlined. Click the card
 // to push the sub-agent onto the existing StackedDetail modal stack.
-
-function formatToolInput(input) {
-  if (typeof input === 'string') return input;
-  try { return JSON.stringify(input, null, 2); } catch { return ''; }
-}
 
 // Walk the sub-agent's nodes in reverse to find the last assistant-side
 // text. Order of preference: last AGENT_RESPONSE > last TEXT in the last
@@ -52,7 +48,7 @@ function summarizeChildren(agentNode) {
 export function SubAgentPair({ useBlock, agentNode, onZoom }) {
   const agentName = agentNode?.agentName || 'subagent';
   const inputText = formatToolInput(useBlock?.input);
-  const outputText = deriveFinalResponse(agentNode);
+  const outputText = prettifyMaybeJson(deriveFinalResponse(agentNode));
   const durationMs = agentNode?.durationMs || 0;
   const summary = summarizeChildren(agentNode);
 

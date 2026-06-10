@@ -3,6 +3,7 @@
 // See LICENSE in the project root for license terms.
 import { useState, useRef } from 'react';
 import { AgentStep } from './StepPanel.jsx';
+import { countVisualRows, sliceVisualRows } from './agentStep/CollapsibleText.jsx';
 import { formatTokens, formatDuration } from '../utils/format.js';
 
 const KIND_ICONS = {
@@ -36,16 +37,16 @@ function LLMDetailView({ node }) {
         <div className="turn-io__empty">not available</div>
       </div>
     );
-    const lines = text.split('\n');
-    const needsCollapse = lines.length > COLLAPSE_LINES;
-    const displayed = (!needsCollapse || expanded) ? text : lines.slice(0, COLLAPSE_LINES).join('\n');
+    const { rows: totalRows, wrapped } = countVisualRows(text);
+    const needsCollapse = totalRows > COLLAPSE_LINES;
+    const displayed = (!needsCollapse || expanded) ? text : sliceVisualRows(text, COLLAPSE_LINES);
     return (
       <div className={`turn-io__block turn-io__block--${colorClass}`}>
         <div className="turn-io__label">{label}</div>
         <div className="turn-io__text">{displayed}</div>
         {needsCollapse && (
           <button className="turn-io__toggle" onClick={() => setExpanded((e) => !e)}>
-            {expanded ? 'collapse' : `${lines.length - COLLAPSE_LINES} more lines`}
+            {expanded ? 'collapse' : `${wrapped ? '~' : ''}${totalRows - COLLAPSE_LINES} more lines`}
           </button>
         )}
       </div>

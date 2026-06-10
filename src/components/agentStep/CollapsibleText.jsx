@@ -16,6 +16,48 @@ import { useRef, useState } from 'react';
 // onToggle(expanded: boolean) lets containers (carousel) react to height
 // changes if they care.
 
+// The body renders with `white-space: pre-wrap`, so a single newline-free
+// line (minified JSON, big tool dumps) can occupy hundreds of visual rows.
+// Collapse decisions therefore count estimated *wrapped* rows, not newlines.
+// CHARS_PER_ROW approximates mono chars per row at typical panel width —
+// being off by ±20% only shifts where the fold lands.
+const CHARS_PER_ROW = 90;
+
+function rowsForLine(line) {
+  return Math.max(1, Math.ceil(line.length / CHARS_PER_ROW));
+}
+
+// → { rows, wrapped } — total estimated visual rows, and whether any line
+// wrapped (i.e. the count is an estimate rather than exact).
+export function countVisualRows(text) {
+  let rows = 0;
+  let wrapped = false;
+  for (const line of (text || '').split('\n')) {
+    const r = rowsForLine(line);
+    if (r > 1) wrapped = true;
+    rows += r;
+  }
+  return { rows, wrapped };
+}
+
+// First `maxRows` estimated visual rows of `text`. A line that overflows the
+// remaining budget is hard-sliced at the char boundary with an ellipsis.
+export function sliceVisualRows(text, maxRows) {
+  const out = [];
+  let budget = maxRows;
+  for (const line of (text || '').split('\n')) {
+    const r = rowsForLine(line);
+    if (r > budget) {
+      out.push(line.slice(0, budget * CHARS_PER_ROW) + '…');
+      break;
+    }
+    out.push(line);
+    budget -= r;
+    if (budget === 0) break;
+  }
+  return out.join('\n');
+}
+
 export function CollapsibleText({
   text,
   previewLines = 6,
@@ -24,12 +66,12 @@ export function CollapsibleText({
 }) {
   const [expanded, setExpanded] = useState(false);
   const bodyRef = useRef(null);
-  const lines = (text || '').split('\n');
-  const needsCollapse = lines.length > previewLines;
-  const hiddenCount = lines.length - previewLines;
+  const { rows: totalRows, wrapped } = countVisualRows(text);
+  const needsCollapse = totalRows > previewLines;
+  const hiddenCount = totalRows - previewLines;
   const displayed = (!needsCollapse || expanded)
     ? (text || '')
-    : lines.slice(0, previewLines).join('\n');
+    : sliceVisualRows(text, previewLines);
 
   if (!needsCollapse) {
     return (
@@ -65,7 +107,7 @@ export function CollapsibleText({
   };
 
   const linesLabel = hiddenCount === 1 ? 'line' : 'lines';
-  const collapsedLabel = `▸ show ${hiddenCount} more ${linesLabel}`;
+  const collapsedLabel = `▸ show ${wrapped ? '~' : ''}${hiddenCount} more ${linesLabel}`;
   const expandedLabel = '▾ collapse';
 
   return (
