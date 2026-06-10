@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ToolPair } from './ToolPair.jsx';
 import { SubAgentPair } from './SubAgentPair.jsx';
+import { ToolNavContext, NOOP_NAV, useToolNav } from './ToolNavContext.jsx';
 
 // Single-frame carousel for N parallel tool calls. One pair visible at a
 // time. Tabs name each sibling so engineers can jump directly to the call
@@ -21,6 +22,31 @@ export function ParallelCarousel({ members, siblings, onZoomIntoSubAgent }) {
   const N = safeMembers.length;
   const [idx, setIdx] = useState(0);
   const touchStartX = useRef(null);
+  const rootRef = useRef(null);
+
+  // Sidebar tool navigation: register one occurrence per tool-pair member
+  // (sub-agents don't contribute to the sidebar's call counts). Only the
+  // member at `idx` is mounted, so each entry carries a reveal() that
+  // switches the frame before the scroll happens. goRef keeps the mount-time
+  // closures pointing at the latest clamp/setIdx.
+  const toolNav = useToolNav();
+  const goRef = useRef(() => {});
+  useEffect(() => {
+    const unregisters = safeMembers.map((m, i) =>
+      m?.type === 'tool-pair'
+        ? toolNav.register({
+            toolName: m.toolNode?.toolName || m.useBlock?.name || 'tool',
+            getEl: () => rootRef.current,
+            reveal: () => goRef.current(i),
+            memberIdx: i,
+          })
+        : null,
+    );
+    return () => unregisters.forEach((un) => un?.());
+    // Member composition is static for a mounted carousel (units are built
+    // from immutable session data), so registration happens once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Lock the frame to the max of each member's *natural collapsed* height
   // so swapping siblings doesn't make the nav row jump as content size
@@ -53,6 +79,7 @@ export function ParallelCarousel({ members, siblings, onZoomIntoSubAgent }) {
 
   const clamp = (i) => Math.max(0, Math.min(N - 1, i));
   const go = (i) => setIdx(clamp(i));
+  goRef.current = go;
 
   const onKeyDown = (e) => {
     if (e.key === 'ArrowLeft')  { e.preventDefault(); go(idx - 1); }
@@ -85,6 +112,7 @@ export function ParallelCarousel({ members, siblings, onZoomIntoSubAgent }) {
       role="region"
       aria-roledescription="carousel"
       aria-label={`Parallel tool calls (${N})`}
+      ref={rootRef}
     >
       <div className="parallel-carousel__header">
         <span className="parallel-carousel__title">
@@ -135,19 +163,23 @@ export function ParallelCarousel({ members, siblings, onZoomIntoSubAgent }) {
         style={lockHeight ? { minHeight: `${lockHeight}px` } : undefined}
       >
         <div className="parallel-carousel__inner" ref={innerRef} key={idx}>
-          {current?.type === 'sub-agent' ? (
-            <SubAgentPair
-              useBlock={current.useBlock}
-              agentNode={current.agentNode}
-              onZoom={onZoomIntoSubAgent}
-            />
-          ) : current?.type === 'tool-pair' ? (
-            <ToolPair
-              useBlock={current.useBlock}
-              resultBlock={current.resultBlock}
-              toolNode={current.toolNode}
-            />
-          ) : null}
+          {/* NOOP provider: the carousel registered every member above, so
+              the mounted inner ToolPair must not register a duplicate. */}
+          <ToolNavContext.Provider value={NOOP_NAV}>
+            {current?.type === 'sub-agent' ? (
+              <SubAgentPair
+                useBlock={current.useBlock}
+                agentNode={current.agentNode}
+                onZoom={onZoomIntoSubAgent}
+              />
+            ) : current?.type === 'tool-pair' ? (
+              <ToolPair
+                useBlock={current.useBlock}
+                resultBlock={current.resultBlock}
+                toolNode={current.toolNode}
+              />
+            ) : null}
+          </ToolNavContext.Provider>
         </div>
       </div>
 

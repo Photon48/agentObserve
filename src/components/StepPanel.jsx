@@ -1,13 +1,16 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
+import { useRef } from 'react';
 import { formatCost, formatTokens, formatDuration } from '../utils/format.js';
 import { CollapsibleText } from './agentStep/CollapsibleText.jsx';
+import { useToolOccurrence } from './agentStep/ToolNavContext.jsx';
 import { ToolPair } from './agentStep/ToolPair.jsx';
 import { SubAgentPair } from './agentStep/SubAgentPair.jsx';
 import { ParallelCarousel } from './agentStep/ParallelCarousel.jsx';
 import { StatusChip } from './agentStep/StatusChip.jsx';
 import { buildRenderUnits, buildRenderUnitsFromNodes } from './agentStep/renderUnits.js';
+import { formatToolInput, prettifyMaybeJson } from '../utils/prettyJson.js';
 
 function PromptStep({ step }) {
   return (
@@ -89,10 +92,13 @@ function TextUnitBlock({ block, model }) {
 }
 
 function OrphanToolUseBlock({ useBlock, toolNode }) {
-  let inputText = '';
-  try { inputText = JSON.stringify(useBlock?.input, null, 2); } catch {}
+  const inputText = formatToolInput(useBlock?.input);
+  // Orphan TOOL_USEs still count in the sidebar's ×N (counts come from TOOL
+  // nodes), so they register as navigable occurrences too.
+  const rootRef = useRef(null);
+  useToolOccurrence(useBlock?.name || toolNode?.toolName, rootRef);
   return (
-    <div className="conv-block conv-block--tool-use conv-block--orphan">
+    <div className="conv-block conv-block--tool-use conv-block--orphan" ref={rootRef}>
       <div className="conv-block__header">
         ⚙ TOOL_USE  {useBlock?.name}
         <span className="conv-block__orphan-tag" title="no matching tool_result">(no result)</span>
@@ -118,7 +124,7 @@ function OrphanToolResultBlock({ block }) {
         ↩ RESULT  {block?.name}
         <span className="conv-block__orphan-tag" title="no matching tool_use">(unmatched)</span>
       </div>
-      <CollapsibleText text={block?.text || ''} previewLines={6} />
+      <CollapsibleText text={prettifyMaybeJson(block?.text || '')} previewLines={6} />
     </div>
   );
 }

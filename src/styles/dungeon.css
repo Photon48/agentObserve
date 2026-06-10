@@ -744,6 +744,52 @@ body::before {
 
 .tool-sidebar__tool-name { min-width: 0; }
 
+/* Row children: chevron-btn (schema toggle) and jump (name → scroll-to-call)
+   are separate sibling buttons inside the row div — never nested buttons.
+   Both inherit the row's mono typography/color so the row reads as one line. */
+.tool-sidebar__chevron-btn,
+.tool-sidebar__jump {
+  appearance: none;
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tool-sidebar__chevron-btn {
+  font-size: 12px;
+  color: var(--fg-dim);
+  /* Enlarged hit target (~26px) without shifting the row's optical grid. */
+  padding: 6px 7px;
+  margin: -6px -3px -6px -7px;
+  border-radius: 3px;
+  align-self: center;
+  transition: color 0.15s cubic-bezier(0.4, 0, 0.2, 1),
+              background 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.tool-sidebar__chevron-btn:hover {
+  color: var(--fg-amber);
+  background: color-mix(in oklab, var(--fg-amber) 8%, transparent);
+}
+
+.tool-sidebar__jump {
+  min-width: 0;
+  word-break: break-word;
+}
+.tool-sidebar__jump--navigable:hover {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.tool-sidebar__count--pos {
+  color: var(--fg-green);
+  font-weight: 600;
+}
+
 .tool-sidebar__count {
   color: var(--fg-green);
   font-family: var(--font-mono);
@@ -1488,15 +1534,7 @@ body::before {
 
 /* ── Tool schema dropdown ───────────────────────────────────── */
 
-.tool-sidebar__chevron {
-  display: inline-block;
-  margin-right: 4px;
-  font-size: 10px;
-  color: var(--fg-dim);
-}
-
 .tool-sidebar__name {
-  cursor: pointer;
   user-select: none;
 }
 
@@ -1930,7 +1968,6 @@ button:focus-visible {
    polish pass) — strip UA button chrome so the design-system class
    carries the visual weight. */
 button.session-filter__option,
-button.tool-sidebar__name,
 button.tool-schema__row-top {
   appearance: none;
   background: transparent;
@@ -1949,7 +1986,8 @@ button.tool-schema__row-top {
 .session-tabs__tab:focus-visible,
 .session-filter__trigger:focus-visible,
 .session-filter__option:focus-visible,
-.tool-sidebar__name:focus-visible {
+.tool-sidebar__chevron-btn:focus-visible,
+.tool-sidebar__jump:focus-visible {
   outline: 2px solid var(--fg-cyan);
   outline-offset: 2px;
 }
@@ -2072,6 +2110,7 @@ button.tool-schema__row-top {
    ───────────────────────────────────────────────────────────────────────── */
 
 .tool-pair {
+  position: relative; /* anchors the .tool-nav-flash ring */
   display: grid;
   grid-template-columns: 18px 1fr;
   grid-template-areas:
@@ -2081,6 +2120,38 @@ button.tool-schema__row-top {
   column-gap: 12px;
   row-gap: 6px;
   margin: 6px 0;
+}
+
+/* ── Sidebar → cascade tool navigation flash ─────────────────────────
+   Applied by ToolNavContext.navigate() to the scrolled-to occurrence
+   (.tool-pair, .parallel-carousel, or orphan conv-block). Phosphor ring +
+   halo, opacity-only fade (compositor-friendly), removed by JS ~1.6s. */
+.conv-block--orphan,
+.parallel-carousel {
+  position: relative;
+}
+
+.tool-nav-flash::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: var(--radius-md);
+  pointer-events: none;
+  box-shadow: 0 0 0 1px var(--fg-green),
+              0 0 18px color-mix(in oklab, var(--fg-green) 35%, transparent),
+              0 4px 12px color-mix(in oklab, var(--fg-green) 15%, transparent);
+  animation: tool-nav-flash-fade 1.5s ease-out forwards;
+}
+
+@keyframes tool-nav-flash-fade {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Static ring, no fade — JS still removes the class after ~1.6s. */
+  .tool-nav-flash::after { animation: none; opacity: 1; }
+  .tool-sidebar__chevron-btn { transition: none; }
 }
 
 .tool-pair__rail {

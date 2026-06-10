@@ -8,6 +8,7 @@ import { StackedDetail } from './StackedDetail.jsx';
 import { TimelineBar } from './TimelineBar.jsx';
 import { WorkflowMinimap } from './WorkflowMinimap.jsx';
 import { useKeyNav } from '../hooks/useKeyNav.js';
+import { ToolNavProvider, useToolNav } from './agentStep/ToolNavContext.jsx';
 
 function resolveGraphState(currentNode, currentGroupIdx, newGraph) {
   if (!newGraph?.groups?.length) return { groupIdx: 0, nodeIdx: 0 };
@@ -191,6 +192,28 @@ function ToolRow({ tool, count, unused }) {
   // Expand state for nested schema rows — keyed by dot-path so each level
   // is independent. Generic over any JSON Schema shape.
   const [openPaths, setOpenPaths] = useState(() => new Set());
+  // Transient "2/5" occurrence readout after a jump; replaces ×N briefly.
+  const [readout, setReadout] = useState(null);
+  const readoutTimer = useRef(null);
+  const toolNav = useToolNav();
+
+  useEffect(() => () => clearTimeout(readoutTimer.current), []);
+
+  function onNameClick() {
+    // CALLED rows jump to the next occurrence in the cascade; if nothing is
+    // mounted (graph view, no detail panel), fall back to the schema toggle
+    // so the click is never a dead end. UNUSED rows have nothing to jump to.
+    if (!unused && count > 0) {
+      const res = toolNav.navigate(tool.name);
+      if (res) {
+        setReadout(res);
+        clearTimeout(readoutTimer.current);
+        readoutTimer.current = setTimeout(() => setReadout(null), 1400);
+        return;
+      }
+    }
+    setOpen((o) => !o);
+  }
 
   function togglePath(p) {
     setOpenPaths((prev) => {
@@ -259,18 +282,36 @@ function ToolRow({ tool, count, unused }) {
     );
   }
 
+  const navigable = !unused && count > 0;
   return (
     <div className="tool-sidebar__item">
-      <button
-        type="button"
-        className={`tool-sidebar__name${unused ? ' tool-sidebar__name--unused' : ''}`}
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-      >
-        <span className="tool-sidebar__chevron">{open ? '▾' : '▸'}</span>
-        <span className="tool-sidebar__tool-name">{tool.name}</span>
-        {count > 0 && <span className="tool-sidebar__count">×{count}</span>}
-      </button>
+      <div className={`tool-sidebar__name${unused ? ' tool-sidebar__name--unused' : ''}`}>
+        <button
+          type="button"
+          className="tool-sidebar__chevron-btn"
+          aria-expanded={open}
+          aria-label={`Toggle ${tool.name} schema`}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open ? '▾' : '▸'}
+        </button>
+        <button
+          type="button"
+          className={`tool-sidebar__jump${navigable ? ' tool-sidebar__jump--navigable' : ''}`}
+          title={navigable ? 'jump to next call' : undefined}
+          onClick={onNameClick}
+        >
+          {tool.name}
+        </button>
+        {count > 0 && (
+          <span
+            className={`tool-sidebar__count${readout ? ' tool-sidebar__count--pos' : ''}`}
+            aria-live="polite"
+          >
+            {readout ? `${readout.idx}/${readout.total}` : `×${count}`}
+          </span>
+        )}
+      </div>
       {open && (
         <div className="tool-schema">
           {tool.description && (
@@ -524,6 +565,7 @@ export function DungeonView({ sessionId, onExit }) {
   );
 
   return (
+    <ToolNavProvider>
     <div className="dungeon-view" data-sysprompt={sysMode} data-tools={toolsMode}>
       <SystemPromptPanel
         prompt={leftPrompt}
@@ -609,5 +651,6 @@ export function DungeonView({ sessionId, onExit }) {
         detailMode={detailMode}
       />
     </div>
+    </ToolNavProvider>
   );
 }
