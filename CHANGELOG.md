@@ -9,6 +9,34 @@ The release-notes section of each version is the source of truth for the
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-11
+
+### Added
+- **Tool sidebar doubles as cascade navigation.** In the agent detail
+  view, clicking a called tool's name scrolls the cascade to that
+  tool's next call and cycles through occurrences (1 → N → 1) with a
+  transient `2/5` position readout in the row. The target card flashes
+  a phosphor ring that fades over 1.5s. Occurrences inside a parallel
+  carousel are revealed (the carousel switches to that member) before
+  scrolling. The schema toggle moved to a dedicated chevron button
+  with a larger hit target; unused tools keep name-click as the schema
+  toggle. Honors `prefers-reduced-motion` (instant jump, static ring).
+- **Wrap-aware collapse counts.** Collapsible text blocks estimate
+  visual rows instead of counting newlines, so single-line minified
+  JSON no longer renders hundreds of rows before the fold. Estimated
+  counts are marked with `~`.
+- **Pretty-printed JSON output.** Tool results and sub-agent responses
+  that contain JSON are pretty-printed via shared `prettyJson` utils.
+
+### Fixed
+- **Receiver no longer drops session resolution on metrics-only
+  payloads.** Metric records carry attributes on their data points,
+  not the record itself; the receiver now guards the lookup.
+- **Raw API body refs resolve across host/container boundaries.**
+  `body_ref` paths are rewritten against `telemetry/<session>/api_bodies/`
+  before falling back to the literal path, and the receiver container
+  mounts `/tmp/agentobserve_bodies` so host-written bodies reach it.
+
 ## [1.0.1] - 2026-06-08
 
 ### Fixed
