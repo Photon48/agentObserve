@@ -55,13 +55,17 @@ def _resolve_session(proto_msg) -> str:
             or getattr(scope_group, "log_records", [])
         )
         if records:
-            v = _find_attr(
-                records[0].attributes,
-                "session.id",
-                "langsmith.trace.session_name",
-            )
-            if v:
-                return v
+            # Metric records carry attributes on their data points, not the
+            # record itself — getattr guards the AttributeError.
+            attrs = getattr(records[0], "attributes", None)
+            if attrs is not None:
+                v = _find_attr(
+                    attrs,
+                    "session.id",
+                    "langsmith.trace.session_name",
+                )
+                if v:
+                    return v
             break
 
     return "unknown"
