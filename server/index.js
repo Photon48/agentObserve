@@ -8,6 +8,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { loadAllSessions } from './loader.js';
 import { buildSessions } from './parser.js';
+import { enrichToolTokens } from './toolTokens.js';
 import { createRouter } from './routes.js';
 import { checkForUpdates } from './updates/checker.js';
 
@@ -62,23 +63,25 @@ checkForUpdates(CURRENT_VERSION).then((result) => {
   }
 });
 
-function loadSessions() {
+async function loadSessions() {
   const { rawBySession, orphanSpans } = loadAllSessions(TELEMETRY_DIR);
-  return buildSessions(rawBySession, orphanSpans);
+  // enrichToolTokens stamps per-tool token counts (model-aware) on the
+  // canonical sessions. Async because it imports tokenizer encodings on demand.
+  return enrichToolTokens(buildSessions(rawBySession, orphanSpans));
 }
 
 console.log(`[agentObserve] v${CURRENT_VERSION} starting`);
 console.log('[agentObserve] Loading telemetry from:', TELEMETRY_DIR);
-let sessions = loadSessions();
+let sessions = await loadSessions();
 console.log(`[agentObserve] Loaded ${sessions.length} sessions, ${sessions.reduce((s, ses) => s + ses.turnCount, 0)} turns`);
 
 // Watch telemetry dir; debounce reloads so burst writes (end of session) trigger once
 let reloadTimer = null;
 fs.watch(TELEMETRY_DIR, { recursive: true }, () => {
   clearTimeout(reloadTimer);
-  reloadTimer = setTimeout(() => {
+  reloadTimer = setTimeout(async () => {
     try {
-      const next = loadSessions();
+      const next = await loadSessions();
       sessions = next;
       console.log(`[agentObserve] Reloaded: ${sessions.length} sessions`);
     } catch (e) {

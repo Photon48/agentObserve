@@ -1,51 +1,128 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { CollapsibleText } from './CollapsibleText.jsx';
 import { StatusChip } from './StatusChip.jsx';
 import { useToolOccurrence } from './ToolNavContext.jsx';
+import { formatDuration, formatTokens } from '../../utils/format.js';
 import { formatToolInput, prettifyMaybeJson } from '../../utils/prettyJson.js';
 
-// Paired TOOL_USE + TOOL_RESULT card. The colored left rail (cyan→amber)
-// gives a continuous bracket so input and output read as one unit.
+// Compact, fixed-height tool card. Collapsed, every card is the same height
+// so a long cascade scans cleanly: three rows — name + status + duration,
+// a one-line input preview, and OUT token count (+ error when failed).
+// Click the summary to expand the full TOOL_USE / TOOL_RESULT detail inline.
+//
+// `orphan` = a TOOL_USE with no matching TOOL_RESULT. Same card geometry so
+// the cascade stays uniform; the result side is marked missing.
 
-export function ToolPair({ useBlock, resultBlock, toolNode }) {
+export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
+  const [open, setOpen] = useState(false);
+  // Once opened, keep the detail mounted so CollapsibleText state survives a
+  // collapse and the close transition has something to animate.
+  const [hasOpened, setHasOpened] = useState(false);
+
   const inputText = formatToolInput(useBlock?.input);
   const resultText = prettifyMaybeJson(resultBlock?.text ?? '');
-  const success = resultBlock?.success !== false && !resultBlock?.is_error;
+  const success = orphan
+    ? (!toolNode?.error && toolNode?.success !== false)
+    : (resultBlock?.success !== false && !resultBlock?.is_error);
   const durationMs = resultBlock?.durationMs || toolNode?.durationMs || 0;
   const errorText = resultBlock?.errorText || toolNode?.error || '';
 
   const toolName = toolNode?.toolName || useBlock?.name || 'tool';
   const toolUseId = useBlock?.id || '';
 
+  // IN = tokens of the tool input, OUT = tokens of the tool result. null when
+  // the field is absent so we render an em dash rather than a misleading "0".
+  const inputTokens = toolNode?.toolInputTokens ?? null;
+  const outputTokens = resultBlock?.outputTokens ?? toolNode?.toolOutputTokens ?? null;
+
   const rootRef = useRef(null);
   useToolOccurrence(toolName, rootRef);
 
+  const toggle = () => {
+    setOpen((o) => !o);
+    setHasOpened(true);
+  };
+
+  const tokLabel = (n) => (n == null ? '—' : `~${formatTokens(n)} tok`);
+
   return (
-    <div className="tool-pair" role="group" aria-label={`Tool call: ${toolName}`} ref={rootRef}>
-      <div className="tool-pair__rail" aria-hidden="true" />
-
-      <div className="tool-pair__use conv-block conv-block--tool-use">
-        <div className="conv-block__header">
-          ⚙ TOOL_USE  {toolName}
-          {toolUseId && <span className="tool-pair__id" title={toolUseId}>{shortId(toolUseId)}</span>}
+    <div
+      className={
+        'tool-card'
+        + (open ? ' tool-card--open' : '')
+        + (!success ? ' tool-card--err' : '')
+        + (orphan ? ' tool-card--orphan' : '')
+      }
+      role="group"
+      aria-label={`Tool call: ${toolName}`}
+      ref={rootRef}
+    >
+      <button
+        type="button"
+        className="tool-card__summary"
+        aria-expanded={open}
+        onClick={toggle}
+      >
+        <div className="tool-card__head">
+          <span className="tool-card__icon" aria-hidden="true">⚙</span>
+          <span className="tool-card__name">{toolName}</span>
+          <span className={`tool-card__status tool-card__status--${success ? 'ok' : 'err'}`}>
+            {success ? '✓' : '✗'}
+          </span>
+          {durationMs > 0 && <span className="tool-card__dur">{formatDuration(durationMs)}</span>}
         </div>
-        <CollapsibleText text={inputText} previewLines={8} />
-      </div>
 
-      <div className="tool-pair__bridge">
-        <StatusChip
-          success={success}
-          durationMs={durationMs}
-          errorText={errorText}
-        />
-      </div>
+        <div className="tool-card__meta">
+          <span className="tool-card__tokens">
+            IN {tokLabel(inputTokens)}
+            <span className="tool-card__tokens-sep"> · </span>
+            OUT {tokLabel(outputTokens)}
+          </span>
+          {!success && errorText && (
+            <span className="tool-card__err-msg" title={errorText}>{errorText}</span>
+          )}
+          {orphan && <span className="tool-card__orphan-tag" title="no matching tool_result">no result</span>}
+          <span className="tool-card__chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
+        </div>
+      </button>
 
-      <div className="tool-pair__result conv-block conv-block--tool-result">
-        <div className="conv-block__header">↩ RESULT  {toolName}</div>
-        <CollapsibleText text={resultText} previewLines={6} emptyLabel="(no output)" />
+      <div className="tool-card__detail" role="region" aria-hidden={!open}>
+        <div className="tool-card__detail-inner">
+          {(open || hasOpened) && (
+            <div className="tool-pair" aria-label={`Tool call detail: ${toolName}`}>
+              <div className="tool-pair__rail" aria-hidden="true" />
+
+              <div className="tool-pair__use conv-block conv-block--tool-use">
+                <div className="conv-block__header">
+                  ⚙ TOOL_USE  {toolName}
+                  {toolUseId && <span className="tool-pair__id" title={toolUseId}>{shortId(toolUseId)}</span>}
+                </div>
+                <CollapsibleText text={inputText} previewLines={8} />
+              </div>
+
+              {orphan ? (
+                <div className="tool-pair__bridge">
+                  <StatusChip success={success} durationMs={durationMs} errorText={errorText} />
+                  <span className="tool-card__orphan-note">no matching tool_result</span>
+                </div>
+              ) : (
+                <>
+                  <div className="tool-pair__bridge">
+                    <StatusChip success={success} durationMs={durationMs} errorText={errorText} />
+                  </div>
+
+                  <div className="tool-pair__result conv-block conv-block--tool-result">
+                    <div className="conv-block__header">↩ RESULT  {toolName}</div>
+                    <CollapsibleText text={resultText} previewLines={6} emptyLabel="(no output)" />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

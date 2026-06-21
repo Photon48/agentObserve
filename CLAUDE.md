@@ -305,9 +305,9 @@ totalInputTokens, totalOutputTokens, steps[], workflowGraph, availableTools ([])
 
 ### AgentNode (discriminated on `kind`)
 - **LLM_CALL**: `kind, model, inputTokens, outputTokens, cacheReadTokens (0), cacheCreationTokens (0), costUsd (0), durationMs, ttftMs (0), stopReason (''), requestId (''), blocks ([]), graphNode ('')`
-- **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), durationMs, success (true), error? ('')`
+- **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), toolInputTokens (0), toolOutputTokens (0), durationMs, success (true), error? ('')` — no framework emits per-tool token counts (tokens live only on LLM-level events), so `toolInputTokens`/`toolOutputTokens` are **approximate model-aware counts** (≥97% accuracy for top models) computed once per load by `enrichToolTokens` in `server/toolTokens.js` using `ai-tokenizer`, keyed on the encoding of the dispatching LLM_CALL's model. `toolOutputTokens` falls back to `toolResultSizeBytes/4` when the result text was not captured (e.g. `OTEL_LOG_TOOL_CONTENT` off).
 - **HOOK**: `kind, hookName, hookEvent, durationMs, success, numHooks, numSuccess`
-- **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime, availableTools` — recursive: `nodes` may itself contain AGENT-kind entries. `availableTools` follows the same strict-isolation rule as the AGENT step (only this sub-agent's own direct LLM_CALL children contribute). Use the shared `classifyAgentNodeKind` / `buildNestedAgentStep` helpers in `shared.js` to detect and emit these uniformly at any depth.
+- **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime, availableTools` — recursive: `nodes` may itself contain AGENT-kind entries. `availableTools` follows the same strict-isolation rule as the AGENT step (only this sub-agent's own direct LLM_CALL children contribute). Use the shared `classifyAgentNodeKind` helper in `shared.js` to detect these; each adapter then emits them through its own recursive promotion pass (`promoteSubAgentsSDK` in `anthropic.js`, `promoteSubAgents` in `claude_code_cli.js`, `buildScopedAgentStep` in `langchain.js`).
 
 #### Parallel grouping on AgentNodes
 
@@ -347,7 +347,7 @@ Adapters extract the list of model-native tool_use ids for each batch and pass i
   claude-code-cli, langchain with a Claude backend) routes through it.
 - **TEXT**: `{ type, text }`
 - **TOOL_USE**: `{ type, id, name, input }`
-- **TOOL_RESULT**: `{ type, id, name, text, is_error?, success?, errorText?, durationMs? }` — `success`, `errorText`, and `durationMs` are populated by the adapter at emit time from the matched TOOL AgentNode so pairing/status rendering on the FE stays block-local (no cross-reference walk needed). `is_error` is the original Anthropic flag; `success === false` is the canonical source of truth and prefers `errorText` over `text` for the failure reason.
+- **TOOL_RESULT**: `{ type, id, name, text, is_error?, success?, errorText?, durationMs?, outputTokens? }` — `success`, `errorText`, and `durationMs` are populated by the adapter at emit time from the matched TOOL AgentNode so pairing/status rendering on the FE stays block-local (no cross-reference walk needed). `is_error` is the original Anthropic flag; `success === false` is the canonical source of truth and prefers `errorText` over `text` for the failure reason. `outputTokens` is stamped post-parse by `enrichToolTokens` (same approximate count as the matched TOOL node's `toolOutputTokens`), so the FE can show it without a node lookup.
 - **AGENT_RESPONSE**: `{ type, text }`
 
 ### WorkflowGraph / WorkflowNode
