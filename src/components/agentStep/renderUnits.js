@@ -184,6 +184,7 @@ export function buildRenderUnitsFromNodes(nodes, onZoomCb = null) {
         success: ok,
         errorText: errText,
         durationMs: n.durationMs || 0,
+        outputTokens: n.toolOutputTokens ?? 0,
         is_error: !ok || undefined,
       };
       atoms.push({
