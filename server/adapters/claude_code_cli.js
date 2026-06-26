@@ -2,7 +2,7 @@
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
 import { getAttr } from '../loader.js';
-import { nanoToMs, nanoToDate, inferToolSchemas, collectToolCallsFromAgentNodes, stampParallelGroup, normalizeAnthropicContentBlock } from './shared.js';
+import { nanoToMs, nanoToDate, inferToolSchemas, collectToolCallsFromAgentNodes, stampParallelGroup, normalizeAnthropicContentBlock, cachePct, stampAgentTokens, stampAgentAggregates } from './shared.js';
 
 export const FRAMEWORK = 'claude-code-cli';
 
@@ -115,11 +115,17 @@ export function buildSession(sessionId, raw) {
   let totalCost = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
   for (const turn of turns) {
     totalCost += turn.totalCost;
     totalInputTokens += turn.totalInputTokens;
     totalOutputTokens += turn.totalOutputTokens;
+    totalCacheReadTokens += turn.totalCacheReadTokens || 0;
+    totalCacheCreationTokens += turn.totalCacheCreationTokens || 0;
   }
+  const totalContextInputTokens =
+    totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens;
 
   // Merge tools from every observation path. A later non-truncated body can
   // backfill description/schema for a tool whose earlier body got cut off.
@@ -172,6 +178,10 @@ export function buildSession(sessionId, raw) {
     totalCost,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreationTokens,
+    totalContextInputTokens,
+    cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
     systemPrompt,
     availableTools,
     turns,
@@ -237,6 +247,8 @@ function buildTurn(
   let totalCost = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
 
   // PROMPT step
   steps.push({ type: 'PROMPT', text: userPrompt });
@@ -340,6 +352,8 @@ function buildTurn(
       totalCost += costUsd;
       totalInputTokens += inputTokens;
       totalOutputTokens += outputTokens;
+      totalCacheReadTokens += cacheReadTokens;
+      totalCacheCreationTokens += cacheCreationTokens;
 
       // Build conversation blocks from response body
       const respBody = reqId ? responseBodies[reqId] : null;
@@ -667,6 +681,10 @@ function buildTurn(
     }
   })(agentNodes);
 
+  // Stamp recursive token rollups on every promoted AGENT-kind node so a
+  // collapsed sub-agent shows the sum of its own LLM calls (incl. nested).
+  stampAgentAggregates(agentNodes);
+
   // Parallel detection — structural, from the raw OTEL data path the CLI
   // uses (the captured response body). One response body's content array
   // with >=2 tool_use blocks IS a model-emitted parallel batch by Anthropic
@@ -729,8 +747,11 @@ function buildTurn(
   // recursing into nested AGENT-kind sub-agents so calls roll up.
   const toolCallCounts = collectToolCallsFromAgentNodes(agentNodes);
 
-  // AGENT step
-  steps.push({ type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts });
+  // AGENT step. Stamp the step with its own agg* token rollup so the
+  // collapsed agent shows total in/out (incl. nested sub-agents).
+  const agentStep = { type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts };
+  stampAgentTokens(agentStep);
+  steps.push(agentStep);
 
   // FINAL step
   steps.push({
@@ -738,6 +759,10 @@ function buildTurn(
     totalCost,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreationTokens,
+    totalContextInputTokens: totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens,
+    cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
     durationMs,
   });
 
@@ -749,6 +774,7 @@ function buildTurn(
 
   // Workflow graph: single AGENT node (no pipeline spans in CLI data)
   const agentStepData = { type: 'AGENT', nodes: agentNodes, capturedBlocks, userPrompt, toolCallCounts };
+  stampAgentTokens(agentStepData);
   const workflowGraph = {
     hasPipeline: false,
     groups: [{
@@ -781,6 +807,10 @@ function buildTurn(
       totalCost,
       totalInputTokens,
       totalOutputTokens,
+      totalCacheReadTokens,
+      totalCacheCreationTokens,
+      totalContextInputTokens: totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens,
+      cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
       steps,
       workflowGraph,
     },

@@ -4,7 +4,7 @@
 import { useState, useRef } from 'react';
 import { AgentStep } from './StepPanel.jsx';
 import { countVisualRows, sliceVisualRows } from './agentStep/CollapsibleText.jsx';
-import { formatTokens, formatDuration } from '../utils/format.js';
+import { formatTokens, formatDuration, formatPct } from '../utils/format.js';
 
 const KIND_ICONS = {
   UPSTREAM_LLM: '↑',
@@ -65,7 +65,39 @@ function LLMDetailView({ node }) {
         <span className="detail-view__key">duration</span>
         <span className="detail-view__val">{formatDuration(node.durationMs)}</span>
         <span className="detail-view__key">input tokens</span>
-        <span className="detail-view__val">{formatTokens(node.inputTokens)}</span>
+        <span className="detail-view__val">
+          {formatTokens(
+            (node.inputTokens || 0) + (node.cacheReadTokens || 0) + (node.cacheCreationTokens || 0),
+          )}
+        </span>
+        {(node.cacheReadTokens > 0 || node.cacheCreationTokens > 0) && (
+          <>
+            <span className="detail-view__key">↳ fresh</span>
+            <span className="detail-view__val">{formatTokens(node.inputTokens)}</span>
+            {node.cacheReadTokens > 0 && (
+              <>
+                <span className="detail-view__key">↳ cache read</span>
+                <span className="detail-view__val">{formatTokens(node.cacheReadTokens)}</span>
+              </>
+            )}
+            {node.cacheCreationTokens > 0 && (
+              <>
+                <span className="detail-view__key">↳ cache write</span>
+                <span className="detail-view__val">{formatTokens(node.cacheCreationTokens)}</span>
+              </>
+            )}
+            <span className="detail-view__key">cache hit</span>
+            <span className="detail-view__val">
+              {formatPct(
+                Math.round(
+                  ((node.cacheReadTokens || 0) /
+                    ((node.inputTokens || 0) + (node.cacheReadTokens || 0) + (node.cacheCreationTokens || 0))) *
+                    100,
+                ),
+              )}
+            </span>
+          </>
+        )}
         <span className="detail-view__key">output tokens</span>
         <span className="detail-view__val">{formatTokens(node.outputTokens)}</span>
         {node.maxTokens > 0 && (

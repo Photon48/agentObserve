@@ -2,7 +2,7 @@
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
 import { useState } from 'react';
-import { truncateId, formatTokens, formatDuration } from '../utils/format.js';
+import { truncateId, formatTokens, formatDuration, formatPct } from '../utils/format.js';
 
 export function HUD({ sessionId, turnIdx, turnCount, turn }) {
   const [copied, setCopied] = useState(false);
@@ -36,9 +36,15 @@ export function HUD({ sessionId, turnIdx, turnCount, turn }) {
           <div className="hud__cell">
             <span className="hud__label">TOKENS</span>
             <span className="hud__value">
-              ↓{formatTokens(turn.totalInputTokens)} ↑{formatTokens(turn.totalOutputTokens)}
+              ↓{formatTokens(turn.totalContextInputTokens ?? turn.totalInputTokens)} ↑{formatTokens(turn.totalOutputTokens)}
             </span>
           </div>
+          {turn.totalCacheReadTokens > 0 && (
+            <div className="hud__cell">
+              <span className="hud__label">CACHE</span>
+              <span className="hud__value">{formatPct(turn.cachePct)}</span>
+            </div>
+          )}
           <div className="hud__cell">
             <span className="hud__label">DURATION</span>
             <span className="hud__value">{formatDuration(turn.durationMs)}</span>

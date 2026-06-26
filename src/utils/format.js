@@ -8,9 +8,16 @@ export function formatCost(usd) {
 }
 
 export function formatTokens(n) {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
+  const v = n || 0;
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+  return String(v);
+}
+
+// Cache-hit / share-of-context percentage. Expects an already-computed integer
+// percent (server stamps `cachePct`); renders as e.g. "44%".
+export function formatPct(n) {
+  return `${Math.round(n || 0)}%`;
 }
 
 export function formatDuration(ms) {

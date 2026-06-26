@@ -173,7 +173,13 @@ export function buildRenderUnitsFromNodes(nodes, onZoomCb = null) {
       // Synthesize a tool-pair atom using the node's own input/output.
       let inputObj = {};
       try { inputObj = n.toolInput ? JSON.parse(n.toolInput) : {}; } catch { inputObj = n.toolInput || ''; }
-      const useBlock = { type: 'TOOL_USE', id: n.toolUseId || `_${i}`, name: n.toolName, input: inputObj };
+      const useBlock = {
+        type: 'TOOL_USE',
+        id: n.toolUseId || `_${i}`,
+        name: n.toolName,
+        input: inputObj,
+        tokens: n.callTokens ?? null,
+      };
       const errText = n.error || '';
       const ok = !errText && n.success !== false;
       const resultBlock = {
@@ -184,6 +190,7 @@ export function buildRenderUnitsFromNodes(nodes, onZoomCb = null) {
         success: ok,
         errorText: errText,
         durationMs: n.durationMs || 0,
+        tokens: n.resultTokens ?? null,
         is_error: !ok || undefined,
       };
       atoms.push({

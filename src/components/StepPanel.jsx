@@ -1,16 +1,13 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
-import { useRef } from 'react';
-import { formatCost, formatTokens, formatDuration } from '../utils/format.js';
+import { formatCost, formatTokens, formatDuration, formatPct } from '../utils/format.js';
 import { CollapsibleText } from './agentStep/CollapsibleText.jsx';
-import { useToolOccurrence } from './agentStep/ToolNavContext.jsx';
 import { ToolPair } from './agentStep/ToolPair.jsx';
 import { SubAgentPair } from './agentStep/SubAgentPair.jsx';
 import { ParallelCarousel } from './agentStep/ParallelCarousel.jsx';
-import { StatusChip } from './agentStep/StatusChip.jsx';
 import { buildRenderUnits, buildRenderUnitsFromNodes } from './agentStep/renderUnits.js';
-import { formatToolInput, prettifyMaybeJson } from '../utils/prettyJson.js';
+import { prettifyMaybeJson } from '../utils/prettyJson.js';
 
 function PromptStep({ step }) {
   return (
@@ -34,6 +31,7 @@ function ThoughtBlock({ block }) {
         <div className="conv-block__header">
           ◈ THINKING
           <span className="conv-block__badge"> · redacted by anthropic</span>
+          {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
         </div>
         <div className="conv-block__body conv-block__body--dim">
           (model emitted reasoning, content withheld upstream)
@@ -43,7 +41,10 @@ function ThoughtBlock({ block }) {
   }
   return (
     <div className="conv-block conv-block--thought">
-      <div className="conv-block__header">◈ THINKING</div>
+      <div className="conv-block__header">
+        ◈ THINKING
+        {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
+      </div>
       <CollapsibleText text={block.text} previewLines={8} />
     </div>
   );
@@ -53,7 +54,10 @@ function TextBlock({ block, model }) {
   const label = model || 'ASSISTANT';
   return (
     <div className="conv-block conv-block--text">
-      <div className="conv-block__header">◆ {label}</div>
+      <div className="conv-block__header">
+        ◆ {label}
+        {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
+      </div>
       <CollapsibleText text={block.text} previewLines={10} />
     </div>
   );
@@ -61,10 +65,26 @@ function TextBlock({ block, model }) {
 
 function LLMTimingRow({ node }) {
   if (!node) return null;
+  // The exact per-message (per-LLM-call) token figures, straight from the API.
+  // Input the model saw = fresh + cache-read + cache-write; cache% = share served
+  // from cache. Shown so an operator can see where tokens go message by message.
+  const cacheRead = node.cacheReadTokens || 0;
+  const cacheCreation = node.cacheCreationTokens || 0;
+  const totalIn = (node.inputTokens || 0) + cacheRead + cacheCreation;
+  const pct = totalIn > 0 ? Math.round((cacheRead / totalIn) * 100) : 0;
   return (
     <div className="llm-timing-row">
       <span className="llm-timing__label">◆ LLM</span>
       <span className="llm-timing__model">{node.model}</span>
+      {totalIn > 0 && (
+        <span className="llm-timing__tokens">in {formatTokens(totalIn)}</span>
+      )}
+      {cacheRead > 0 && (
+        <span className="llm-timing__cache">cache {formatPct(pct)}</span>
+      )}
+      {node.outputTokens > 0 && (
+        <span className="llm-timing__tokens">out {formatTokens(node.outputTokens)}</span>
+      )}
       <span className="llm-timing__dur">{formatDuration(node.durationMs)}</span>
       {node.ttftMs > 0 && (
         <span className="llm-timing__ttft">ttft {formatDuration(node.ttftMs)}</span>
@@ -76,7 +96,10 @@ function LLMTimingRow({ node }) {
 function AgentResponseBlock({ block }) {
   return (
     <div className="conv-block conv-block--agent-response">
-      <div className="conv-block__header">★ RESPONSE</div>
+      <div className="conv-block__header">
+        ★ RESPONSE
+        {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
+      </div>
       <CollapsibleText text={block.text} previewLines={10} />
     </div>
   );
@@ -89,32 +112,6 @@ function TextUnitBlock({ block, model }) {
     case 'AGENT_RESPONSE': return <AgentResponseBlock block={block} />;
     default: return null;
   }
-}
-
-function OrphanToolUseBlock({ useBlock, toolNode }) {
-  const inputText = formatToolInput(useBlock?.input);
-  // Orphan TOOL_USEs still count in the sidebar's ×N (counts come from TOOL
-  // nodes), so they register as navigable occurrences too.
-  const rootRef = useRef(null);
-  useToolOccurrence(useBlock?.name || toolNode?.toolName, rootRef);
-  return (
-    <div className="conv-block conv-block--tool-use conv-block--orphan" ref={rootRef}>
-      <div className="conv-block__header">
-        ⚙ TOOL_USE  {useBlock?.name}
-        <span className="conv-block__orphan-tag" title="no matching tool_result">(no result)</span>
-      </div>
-      <CollapsibleText text={inputText} previewLines={8} />
-      {toolNode && (
-        <div className="conv-block__meta">
-          <StatusChip
-            success={!toolNode.error && toolNode.success !== false}
-            durationMs={toolNode.durationMs}
-            errorText={toolNode.error || ''}
-          />
-        </div>
-      )}
-    </div>
-  );
 }
 
 function OrphanToolResultBlock({ block }) {
@@ -163,7 +160,15 @@ function renderUnit(u, onZoomIntoSubAgent) {
         />
       );
     case 'orphan-tool-use':
-      return <OrphanToolUseBlock key={u.key} useBlock={u.useBlock} toolNode={u.toolNode} />;
+      return (
+        <ToolPair
+          key={u.key}
+          useBlock={u.useBlock}
+          resultBlock={null}
+          toolNode={u.toolNode}
+          orphan
+        />
+      );
     case 'orphan-tool-result':
       return <OrphanToolResultBlock key={u.key} block={u.block} />;
     case 'cascade-llm':
@@ -232,10 +237,21 @@ function UpstreamSection({ nodes, position }) {
 // ── Legacy cascade (fallback when no blocks) ─────────────────────────────────
 
 function LLMNode({ node }) {
+  // Input the model actually saw = fresh + cache-read (cascading context) +
+  // cache-write. cache% = share served from cache.
+  const cacheRead = node.cacheReadTokens || 0;
+  const cacheCreation = node.cacheCreationTokens || 0;
+  const totalIn = (node.inputTokens || 0) + cacheRead + cacheCreation;
+  const pct = totalIn > 0 ? Math.round((cacheRead / totalIn) * 100) : 0;
+  const breakdown = [
+    `fresh ${formatTokens(node.inputTokens)}`,
+    cacheRead > 0 && `cache-read ${formatTokens(cacheRead)}`,
+    cacheCreation > 0 && `cache-write ${formatTokens(cacheCreation)}`,
+  ].filter(Boolean).join(' · ');
   const meta = [
-    `in: ${formatTokens(node.inputTokens)}`,
+    `in: ${formatTokens(totalIn)} (${breakdown})`,
+    cacheRead > 0 && `cache ${formatPct(pct)}`,
     `out: ${formatTokens(node.outputTokens)}`,
-    node.cacheReadTokens > 0 && `cache: ${formatTokens(node.cacheReadTokens)}`,
     `cost: ${formatCost(node.costUsd)}`,
     node.ttftMs > 0 && `ttft: ${formatDuration(node.ttftMs)}`,
     `dur: ${formatDuration(node.durationMs)}`,
@@ -316,6 +332,13 @@ function SubAgentNode({ node, onZoom }) {
         {nestedAgents > 0 && <span>{nestedAgents} sub-agent</span>}
         {node.durationMs > 0 && <span>{formatDuration(node.durationMs)}</span>}
       </div>
+      {node.aggTotalInputTokens > 0 && (
+        <div className="cascade-agent__summary">
+          <span>in {formatTokens(node.aggTotalInputTokens)}</span>
+          <span>out {formatTokens(node.aggOutputTokens)}</span>
+          {node.aggCacheReadTokens > 0 && <span>cache {formatPct(node.cachePct)}</span>}
+        </div>
+      )}
     </button>
   );
 }
@@ -347,7 +370,15 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
       subAgentNodes.push(node);
       if (node.toolUseId) subAgentByToolUseId[node.toolUseId] = node;
     } else if (node.kind === 'LLM_CALL') {
-      llmTimings.push({ durationMs: node.durationMs, ttftMs: node.ttftMs, model: node.model });
+      llmTimings.push({
+        durationMs: node.durationMs,
+        ttftMs: node.ttftMs,
+        model: node.model,
+        inputTokens: node.inputTokens,
+        outputTokens: node.outputTokens,
+        cacheReadTokens: node.cacheReadTokens,
+        cacheCreationTokens: node.cacheCreationTokens,
+      });
     }
   }
 
@@ -426,6 +457,19 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
 
   return (
     <div className="agent-step-wrap">
+      {step.aggTotalInputTokens > 0 && (
+        <div className="agent-token-rollup">
+          <span className="agent-token-rollup__label">AGENT TOTAL</span>
+          <span>in {formatTokens(step.aggTotalInputTokens)}</span>
+          <span className="text-dim">
+            (fresh {formatTokens(step.aggInputTokens)}
+            {step.aggCacheReadTokens > 0 && ` · cache-read ${formatTokens(step.aggCacheReadTokens)}`}
+            {step.aggCacheCreationTokens > 0 && ` · cache-write ${formatTokens(step.aggCacheCreationTokens)}`})
+          </span>
+          {step.aggCacheReadTokens > 0 && <span>cache {formatPct(step.cachePct)}</span>}
+          <span>out {formatTokens(step.aggOutputTokens)}</span>
+        </div>
+      )}
       <UpstreamSection nodes={upstreamPre} position="pre" />
       {(upstreamPre.length > 0 || upstreamPost.length > 0) && (
         <div className="downstream-section__divider">↓ AGENT</div>
@@ -445,7 +489,29 @@ function FinalStep({ step }) {
         <span className="final-key">total cost</span>
         <span className="final-val">{formatCost(step.totalCost)}</span>
         <span className="final-key">input tokens</span>
-        <span className="final-val final-val--green">{formatTokens(step.totalInputTokens)}</span>
+        <span className="final-val final-val--green">
+          {formatTokens(step.totalContextInputTokens ?? step.totalInputTokens)}
+        </span>
+        <span className="final-key">↳ fresh</span>
+        <span className="final-val">{formatTokens(step.totalInputTokens)}</span>
+        {step.totalCacheReadTokens > 0 && (
+          <>
+            <span className="final-key">↳ cache read</span>
+            <span className="final-val">{formatTokens(step.totalCacheReadTokens)}</span>
+          </>
+        )}
+        {step.totalCacheCreationTokens > 0 && (
+          <>
+            <span className="final-key">↳ cache write</span>
+            <span className="final-val">{formatTokens(step.totalCacheCreationTokens)}</span>
+          </>
+        )}
+        {step.totalCacheReadTokens > 0 && (
+          <>
+            <span className="final-key">cache hit</span>
+            <span className="final-val">{formatPct(step.cachePct)}</span>
+          </>
+        )}
         <span className="final-key">output tokens</span>
         <span className="final-val final-val--green">{formatTokens(step.totalOutputTokens)}</span>
         <span className="final-key">turn duration</span>

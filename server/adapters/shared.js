@@ -135,6 +135,79 @@ export function buildWorkflowNode(span, kind, agentStepData) {
   };
 }
 
+// ── Token aggregation (cache-aware, agent-level rollups) ────────────────────
+//
+// An agent is "an LLM in a loop": its token usage is the recursive sum of every
+// LLM_CALL it ran, including nested sub-agents. The Anthropic API splits a
+// call's input into three parts — `inputTokens` (fresh), `cacheReadTokens`
+// (reused/cascading context served from cache) and `cacheCreationTokens` (newly
+// written to cache). The model actually "saw" the sum of all three, so the
+// meaningful per-call input is `totalInput = input + cacheRead + cacheCreation`.
+//
+// These helpers are pure and framework-agnostic — every adapter stamps the
+// results server-side so the FE never re-derives token math.
+
+// % of total input context served from cache. cacheCreation is "writing", not
+// "served", so it is NOT counted as cached volume.
+export function cachePct(input, cacheRead, cacheCreation) {
+  const total = (input || 0) + (cacheRead || 0) + (cacheCreation || 0);
+  return total > 0 ? Math.round(((cacheRead || 0) / total) * 100) : 0;
+}
+
+// Recursively sum LLM_CALL tokens, descending into nested AGENT.nodes.
+export function aggregateAgentTokens(nodes) {
+  let input = 0, cacheRead = 0, cacheCreation = 0, output = 0;
+  for (const n of nodes || []) {
+    if (n?.kind === 'LLM_CALL') {
+      input += n.inputTokens || 0;
+      cacheRead += n.cacheReadTokens || 0;
+      cacheCreation += n.cacheCreationTokens || 0;
+      output += n.outputTokens || 0;
+    } else if (n?.kind === 'AGENT') {
+      const s = aggregateAgentTokens(n.nodes);
+      input += s.input;
+      cacheRead += s.cacheRead;
+      cacheCreation += s.cacheCreation;
+      output += s.output;
+    }
+  }
+  const totalInput = input + cacheRead + cacheCreation;
+  return {
+    input,
+    cacheRead,
+    cacheCreation,
+    output,
+    totalInput,
+    cachePct: cachePct(input, cacheRead, cacheCreation),
+  };
+}
+
+// Stamp the canonical agg* / cachePct fields onto an AGENT-kind node or an
+// AGENT step from its own `nodes` list. Returns the aggregate (so callers that
+// also want the numbers don't recompute).
+export function stampAgentTokens(target) {
+  if (!target) return null;
+  const agg = aggregateAgentTokens(target.nodes);
+  target.aggInputTokens = agg.input;
+  target.aggCacheReadTokens = agg.cacheRead;
+  target.aggCacheCreationTokens = agg.cacheCreation;
+  target.aggOutputTokens = agg.output;
+  target.aggTotalInputTokens = agg.totalInput;
+  target.cachePct = agg.cachePct;
+  return agg;
+}
+
+// Walk a node tree; stamp aggregated token fields on every AGENT-kind node
+// (recursing into nested sub-agents so inner agents are stamped too).
+export function stampAgentAggregates(nodes) {
+  for (const n of nodes || []) {
+    if (n?.kind === 'AGENT') {
+      stampAgentTokens(n);
+      stampAgentAggregates(n.nodes);
+    }
+  }
+}
+
 // ── Content extraction ──────────────────────────────────────────────────────
 //
 // Handles both plain strings AND the Anthropic-style content-block array

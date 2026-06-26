@@ -13,7 +13,7 @@ export function createRouter(getSessions, getVersionInfo) {
   // Summaries sorted newest-first, no turns
   router.get('/sessions', (req, res) => {
     const summaries = getSessions()
-      .map(({ id, framework, startTime, endTime, turnCount, totalCost, totalInputTokens, totalOutputTokens }) => ({
+      .map(({ id, framework, startTime, endTime, turnCount, totalCost, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens, totalContextInputTokens, cachePct }) => ({
         id,
         framework,
         startTime,
@@ -22,6 +22,10 @@ export function createRouter(getSessions, getVersionInfo) {
         totalCost,
         totalInputTokens,
         totalOutputTokens,
+        totalCacheReadTokens,
+        totalCacheCreationTokens,
+        totalContextInputTokens,
+        cachePct,
       }))
       .sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
     res.json(summaries);

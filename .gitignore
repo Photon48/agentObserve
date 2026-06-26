@@ -1,6 +1,7 @@
 # Service management
 .pids/
 .logs/
+*.log
 
 # Dependencies
 node_modules/

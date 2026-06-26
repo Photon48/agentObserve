@@ -287,27 +287,44 @@ Every adapter returns this shape. Fields a framework can't populate use the list
 ### Session
 ```
 id, framework ('claude-code-cli'|'anthropic-sdk'|'langchain'), startTime, endTime, turnCount,
-totalCost (0), totalInputTokens, totalOutputTokens, systemPrompt (''),
-availableTools ([]), turns[]
+totalCost (0), totalInputTokens, totalOutputTokens,
+totalCacheReadTokens (0), totalCacheCreationTokens (0), totalContextInputTokens, cachePct (0),
+systemPrompt (''), availableTools ([]), turns[]
 ```
 
 ### Turn
 ```
 idx, userPrompt (''), startTime, endTime, durationMs, totalCost (0),
-totalInputTokens, totalOutputTokens, steps[], workflowGraph, availableTools ([])
+totalInputTokens, totalOutputTokens,
+totalCacheReadTokens (0), totalCacheCreationTokens (0), totalContextInputTokens, cachePct (0),
+steps[], workflowGraph, availableTools ([])
 ```
 `idx` is the turn's identity within a session (0-based position in `session.turns`). `availableTools` is the per-turn union of tools offered to any AGENT scope in this turn — a subset of `session.availableTools` that shares JS object identity with the session-level entries (so schema inference applied at the session level propagates here automatically).
 
+#### Cache-aware token fields (session + turn + FINAL)
+
+`totalInputTokens` is **fresh** (uncached) input only — the raw Anthropic
+`usage.input_tokens`. With prompt caching the model also reads reused context
+(`totalCacheReadTokens`, the cascading conversation history) and writes new cache
+(`totalCacheCreationTokens`). The input the model actually saw is
+`totalContextInputTokens = totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens`.
+`cachePct` = `round(cacheRead / totalContext * 100)` — the share of input volume
+served from cache (cache-creation counts as context but not as "served"). All of
+these are summed from the per-LLM_CALL token fields and computed by the shared
+`cachePct()` helper in `shared.js`. LangChain reads its cache counts from the
+`langsmith.metadata.usage_metadata` span attribute (`input_token_details.cache_read`
+/ `cache_creation`); the OTEL `gen_ai.usage.*` attributes never carry cache data.
+
 ### Step (discriminated on `type`)
 - **PROMPT**: `{ type, text }`
-- **AGENT**: `{ type, nodes: AgentNode[], capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts, availableTools }` — `toolCallCounts: Record<string, number>` is a derived summary mapping each tool name to its invocation count among the **direct** TOOL-kind children of this AGENT step's `nodes` list. Calls inside nested AGENT-kind sub-agents are excluded — they surface only when the operator zooms into that sub-agent, which carries its own scope. Empty `{}` when no tools were called at this level. Produced by the shared `collectToolCallsFromAgentNodes` helper in `shared.js`. `availableTools: ToolDef[]` is the **strictly scoped** tool catalog for this AGENT — built only from the LLM definitions/request bodies tied to its own direct LLM_CALL children. Sub-agents' tools never leak up and parent tools never leak down. Shares object identity with `session.availableTools` and `turn.availableTools`. The frontend partitions this list (not the session union) into "called" vs "unused" in the tools sidebar.
-- **FINAL**: `{ type, totalCost, totalInputTokens, totalOutputTokens, durationMs }`
+- **AGENT**: `{ type, nodes: AgentNode[], capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts, availableTools, aggInputTokens, aggCacheReadTokens, aggCacheCreationTokens, aggOutputTokens, aggTotalInputTokens, cachePct }` — the `agg*` fields are the **recursive token rollup** for this agent ("an agent is an LLM in a loop"): the sum of every descendant LLM_CALL's tokens, descending into nested AGENT-kind sub-agents so a collapsed agent shows its full in/out. Computed by `stampAgentTokens` / `aggregateAgentTokens` in `shared.js` after each adapter's sub-agent promotion pass runs. `cachePct` is the agent's cache-hit share. `toolCallCounts: Record<string, number>` is a derived summary mapping each tool name to its invocation count among the **direct** TOOL-kind children of this AGENT step's `nodes` list. Calls inside nested AGENT-kind sub-agents are excluded — they surface only when the operator zooms into that sub-agent, which carries its own scope. Empty `{}` when no tools were called at this level. Produced by the shared `collectToolCallsFromAgentNodes` helper in `shared.js`. `availableTools: ToolDef[]` is the **strictly scoped** tool catalog for this AGENT — built only from the LLM definitions/request bodies tied to its own direct LLM_CALL children. Sub-agents' tools never leak up and parent tools never leak down. Shares object identity with `session.availableTools` and `turn.availableTools`. The frontend partitions this list (not the session union) into "called" vs "unused" in the tools sidebar.
+- **FINAL**: `{ type, totalCost, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheCreationTokens, totalContextInputTokens, cachePct, durationMs }` — token fields mirror the turn's (see "Cache-aware token fields" above).
 
 ### AgentNode (discriminated on `kind`)
 - **LLM_CALL**: `kind, model, inputTokens, outputTokens, cacheReadTokens (0), cacheCreationTokens (0), costUsd (0), durationMs, ttftMs (0), stopReason (''), requestId (''), blocks ([]), graphNode ('')`
-- **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), durationMs, success (true), error? ('')`
+- **TOOL**: `kind, toolUseId, toolName, decision ('unknown'), source (''), toolInput (''), toolResultSizeBytes (0), callTokens (null), resultTokens (null), durationMs, success (true), error? ('')` — a tool has **no token cost of its own**. `callTokens` is the output tokens the dispatching model spent *writing* this tool call (this tool's TOOL_USE block's share of the producing LLM_CALL's exact `outputTokens`); `resultTokens` is the result text tokens *read back* on the next message (the matched TOOL_RESULT block's tokenized text, falling back to `toolResultSizeBytes/4` when the result text was not captured, e.g. `OTEL_LOG_TOOL_CONTENT` off). Both are derived from the exact per-LLM-call token counts by `enrichToolTokens` in `server/toolTokens.js` (see the Block-level attribution note below) and are `null` when unknown so the FE renders an em dash rather than a misleading 0. The proportioning ratio uses `ai-tokenizer` keyed on the dispatching model's encoding, but the per-message total it divides is always the exact API figure.
 - **HOOK**: `kind, hookName, hookEvent, durationMs, success, numHooks, numSuccess`
-- **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime, availableTools` — recursive: `nodes` may itself contain AGENT-kind entries. `availableTools` follows the same strict-isolation rule as the AGENT step (only this sub-agent's own direct LLM_CALL children contribute). Use the shared `classifyAgentNodeKind` / `buildNestedAgentStep` helpers in `shared.js` to detect and emit these uniformly at any depth.
+- **AGENT**: `kind, agentName, agentType ('subagent'|'task'|''), source (''), nodes: AgentNode[], durationMs, startTime, endTime, availableTools, aggInputTokens, aggCacheReadTokens, aggCacheCreationTokens, aggOutputTokens, aggTotalInputTokens, cachePct` — recursive: `nodes` may itself contain AGENT-kind entries. The `agg*`/`cachePct` fields are the recursive token rollup for this sub-agent (sum of all descendant LLM_CALLs incl. nested sub-agents), stamped by `stampAgentAggregates` in `shared.js` — the FE shows these on the collapsed sub-agent card. `availableTools` follows the same strict-isolation rule as the AGENT step (only this sub-agent's own direct LLM_CALL children contribute). Use the shared `classifyAgentNodeKind` helper in `shared.js` to detect these; each adapter then emits them through its own recursive promotion pass (`promoteSubAgentsSDK` in `anthropic.js`, `promoteSubAgents` in `claude_code_cli.js`, `buildScopedAgentStep` in `langchain.js`).
 
 #### Parallel grouping on AgentNodes
 
@@ -331,7 +348,27 @@ When the model emits **N ≥ 2 tool_use blocks in a single LLM response**, the m
 Adapters extract the list of model-native tool_use ids for each batch and pass it to the shared `stampParallelGroup(nodes, toolUseIds)` helper (`server/adapters/shared.js`), which locates every TOOL/AGENT AgentNode whose `toolUseId` matches and stamps the four fields. The group id is built via `parallelGroupIdFor(toolUseIds)` so the format stays centralized. Adapters recurse into nested `AGENT.nodes` so a sub-agent's own parallel batches get stamped at that scope.
 
 ### Block (discriminated on `type`)
-- **THOUGHT**: `{ type, text, redacted? (false), signature? ('') }` — Anthropic's
+
+#### Block-level token attribution
+
+Every output-bearing block carries a `tokens` field — the exact per-LLM-call
+token counts attributed down to the block. A message's `output_tokens` is exact
+(from the API) but not itemized per block, so `enrichToolTokens` in
+`server/toolTokens.js` **splits that exact total** across the message's OUTPUT
+blocks (THOUGHT / TEXT / TOOL_USE / AGENT_RESPONSE) in proportion to each
+block's tokenized size, using largest-remainder (Hamilton) rounding so
+`Σ output-block tokens === node.outputTokens` exactly. A redacted THOUGHT (empty
+text, real cost) gets a `signature`-derived floor weight so its share isn't
+absorbed by siblings. A TOOL_RESULT is **not** part of the producing call's
+output — it is read by the *next* message — so its `tokens` is just its
+tokenized result text. `tokens` is **omitted** (not 0) when block content is
+unavailable (capture off) so the FE can tell "not measured" from "zero". The
+pass stamps `node.blocks` authoritatively then reconciles onto the turn's
+flattened `capturedBlocks` (by `id` for TOOL_USE/TOOL_RESULT; by ordered
+type+position for text blocks, treating TEXT ≡ AGENT_RESPONSE). It is
+framework-agnostic: adapters only emit blocks + exact LLM_CALL token fields.
+
+- **THOUGHT**: `{ type, text, redacted? (false), signature? (''), tokens? }` — Anthropic's
   extended-thinking emits two physically distinct upstream shapes (an
   unredacted `thinking` block with raw reasoning, and either a
   `redacted_thinking` block or a `thinking` block whose `thinking` field
@@ -345,10 +382,10 @@ Adapters extract the list of model-native tool_use ids for each batch and pass i
   `normalizeAnthropicContentBlock` in `server/adapters/shared.js` —
   every adapter that may see Anthropic content blocks (anthropic-sdk,
   claude-code-cli, langchain with a Claude backend) routes through it.
-- **TEXT**: `{ type, text }`
-- **TOOL_USE**: `{ type, id, name, input }`
-- **TOOL_RESULT**: `{ type, id, name, text, is_error?, success?, errorText?, durationMs? }` — `success`, `errorText`, and `durationMs` are populated by the adapter at emit time from the matched TOOL AgentNode so pairing/status rendering on the FE stays block-local (no cross-reference walk needed). `is_error` is the original Anthropic flag; `success === false` is the canonical source of truth and prefers `errorText` over `text` for the failure reason.
-- **AGENT_RESPONSE**: `{ type, text }`
+- **TEXT**: `{ type, text, tokens? }` — `tokens` is this block's share of the producing message's output (see Block-level attribution above).
+- **TOOL_USE**: `{ type, id, name, input, tokens? }` — `tokens` is the output cost of writing this tool call (== the matched TOOL node's `callTokens`).
+- **TOOL_RESULT**: `{ type, id, name, text, is_error?, success?, errorText?, durationMs?, tokens? }` — `success`, `errorText`, and `durationMs` are populated by the adapter at emit time from the matched TOOL AgentNode so pairing/status rendering on the FE stays block-local (no cross-reference walk needed). `is_error` is the original Anthropic flag; `success === false` is the canonical source of truth and prefers `errorText` over `text` for the failure reason. `tokens` is the tokenized result text — the "result cost" read by the next message (== the matched TOOL node's `resultTokens`), stamped post-parse by `enrichToolTokens` so the FE can show it without a node lookup.
+- **AGENT_RESPONSE**: `{ type, text, tokens? }` — `tokens` as for TEXT (this is the final reply block).
 
 ### WorkflowGraph / WorkflowNode
 - `WorkflowGraph`: `{ hasPipeline, groups: [{ groupIdx, nodes: WorkflowNode[] }] }`

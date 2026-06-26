@@ -1527,10 +1527,12 @@ body::before {
   margin-bottom: 2px;
 }
 
-.llm-timing__label { color: var(--fg-amber); font-weight: 700; }
-.llm-timing__model { color: var(--fg-dim); }
-.llm-timing__dur   { color: var(--fg-amber); }
-.llm-timing__ttft  { color: var(--fg-dim); }
+.llm-timing__label  { color: var(--fg-amber); font-weight: 700; }
+.llm-timing__model  { color: var(--fg-dim); }
+.llm-timing__tokens { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.llm-timing__cache  { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.llm-timing__dur    { color: var(--fg-amber); }
+.llm-timing__ttft   { color: var(--fg-dim); }
 
 /* ── Tool schema dropdown ───────────────────────────────────── */
 
@@ -2189,30 +2191,165 @@ button.tool-schema__row-top {
   opacity: 0.75;
 }
 
-/* Sub-agent variant: amber rail end-to-end + cursor affordance */
-.sub-agent-pair { cursor: pointer; outline: none; }
-.sub-agent-pair .tool-pair__rail {
-  background: var(--fg-amber);
-  opacity: 0.55;
-}
-.sub-agent-pair:hover .tool-pair__rail,
-.sub-agent-pair:focus-visible .tool-pair__rail {
-  opacity: 0.9;
-}
-.sub-agent-pair:focus-visible {
-  box-shadow: 0 0 0 2px var(--fg-amber);
+/* ── Compact tool card ────────────────────────────────────────────────────
+   The collapsed face every tool/sub-agent call renders as. Two fixed-height
+   rows (name+status+duration, then IN/OUT tokens or child summary) so a long
+   cascade scans at a uniform height. Click the summary to expand the full
+   TOOL_USE / TOOL_RESULT detail (.tool-pair) inline; sub-agents zoom instead
+   of expanding. Depth = surface tone + 1px rule + a 3px role-color left
+   stripe (the system's sanctioned semantic-type stripe). No shadows. */
+.tool-card {
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  margin: 6px 0;
+  overflow: hidden; /* clips the detail during the 0fr→1fr expand */
+  position: relative; /* anchors the .tool-nav-flash ring */
+  transition: background 0.18s var(--ease-out);
 }
-.sub-agent-pair__zoom-hint {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--fg-amber);
-  opacity: 0.85;
+.tool-card:hover { background: var(--bg-raised); }
+.tool-card--orphan { border-style: dashed; opacity: 0.9; }
+
+.tool-card__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  background: none;
+  border: none;
+  border-left: 3px solid var(--fg-cyan); /* cyan = tool identity */
+  padding: 8px 12px;
   font-family: var(--font-mono);
+  color: var(--fg-soft);
+  cursor: pointer;
 }
-.sub-agent-pair__summary {
+.tool-card--err .tool-card__summary      { border-left-color: var(--fg-red); }
+.tool-card--subagent .tool-card__summary { border-left-color: var(--fg-amber); }
+.tool-card__summary:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--fg-cyan) 55%, transparent);
+}
+.tool-card--subagent .tool-card__summary:focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--fg-amber) 55%, transparent);
+}
+
+/* Each row is hard-fixed so every collapsed card is the same height. */
+.tool-card__head,
+.tool-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 18px;
+  line-height: 18px;
+  overflow: hidden;
+}
+
+.tool-card__icon { color: var(--fg-cyan); font-size: 12px; flex: none; }
+.tool-card--subagent .tool-card__icon { color: var(--fg-amber); }
+.tool-card__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-cyan);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-card--subagent .tool-card__name { color: var(--fg-amber); }
+.tool-card__status { font-size: 12px; flex: none; }
+.tool-card__status--ok  { color: var(--fg-green); }
+.tool-card__status--err { color: var(--fg-red); }
+.tool-card__dur {
+  flex: none;
   color: var(--fg-dim);
+  font-size: 11px;
+  font-feature-settings: 'tnum';
+}
+
+.tool-card__tokens,
+.tool-card__subagent-summary {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-feature-settings: 'tnum';
+  white-space: nowrap;
+}
+.tool-card__tokens-sep { color: var(--fg-dim); }
+.tool-card__tokens-approx { color: var(--fg-dim); font-style: italic; }
+.tool-card__subagent-summary { color: var(--fg-dim); }
+
+/* Aggregated token rollup banner at the top of an AGENT step / sub-agent zoom */
+.agent-token-rollup {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev, rgba(255, 255, 255, 0.02));
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-feature-settings: 'tnum';
+}
+.agent-token-rollup__label {
+  color: var(--fg-amber);
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+.tool-card__err-msg {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-red);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-card__orphan-tag {
+  flex: none;
+  color: var(--fg-amber);
   font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tool-card__chevron {
+  margin-left: auto;
+  flex: none;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.tool-card__chevron--zoom { color: var(--fg-amber); opacity: 0.85; }
+.tool-card__summary:hover .tool-card__chevron,
+.tool-card--open .tool-card__chevron { color: var(--fg-amber); }
+
+/* Inline expansion — animate the grid track, not a layout property. */
+.tool-card__detail {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s var(--ease-out);
+}
+.tool-card--open .tool-card__detail { grid-template-rows: 1fr; }
+.tool-card__detail-inner {
+  overflow: hidden;
+  min-height: 0;
+  padding: 0 12px;
+}
+.tool-card--open .tool-card__detail-inner { padding-bottom: 10px; }
+.tool-card__orphan-note {
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-style: italic;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-card { transition: none; }
+  .tool-card__detail { transition: none; }
 }
 
 /* Orphan TOOL_USE / TOOL_RESULT (no match) */
