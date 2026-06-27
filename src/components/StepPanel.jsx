@@ -1,12 +1,15 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
+import { useState, useMemo, useRef, useCallback } from 'react';
 import { formatCost, formatTokens, formatDuration, formatPct } from '../utils/format.js';
 import { CollapsibleText } from './agentStep/CollapsibleText.jsx';
 import { ToolPair } from './agentStep/ToolPair.jsx';
 import { SubAgentPair } from './agentStep/SubAgentPair.jsx';
 import { ParallelCarousel } from './agentStep/ParallelCarousel.jsx';
 import { buildRenderUnits, buildRenderUnitsFromNodes } from './agentStep/renderUnits.js';
+import { groupRenderUnits, callStats, callDurations, callManifest, callPreview } from './agentStep/callGroups.js';
+import { MessageCall } from './agentStep/MessageCall.jsx';
 import { prettifyMaybeJson } from '../utils/prettyJson.js';
 
 function PromptStep({ step }) {
@@ -179,6 +182,83 @@ function renderUnit(u, onZoomIntoSubAgent) {
   }
 }
 
+// Groups a flat render-unit stream into per-LLM-call blocks (MessageCall),
+// each collapsed by default. The compact block shows in / cache / out / time /
+// ttft with mini bars; expanding reveals the thinking / text / tool-use blocks.
+// Open state is held here (a Set of callIndex) so the expand-all / collapse-all
+// toggle can drive every block at once. Token magnitude across the whole
+// session is shown on the turn timeline (TimelineBar), not here.
+function AgentConversation({ units, onZoomIntoSubAgent }) {
+  const groups = useMemo(() => groupRenderUnits(units), [units]);
+  const callIndices = useMemo(
+    () => groups.filter((g) => g.llm).map((g) => g.callIndex),
+    [groups],
+  );
+  // Sum of each call's combined (llm + tool) duration. Within one agent the
+  // calls are sequential, so this tiles the agent's own total — the figure the
+  // collapsed block durations add up to.
+  const totalMs = useMemo(
+    () => groups.reduce((sum, g) => (g.llm ? sum + callDurations(g).totalMs : sum), 0),
+    [groups],
+  );
+  // Collapsed by default — start with an empty open set.
+  const [openSet, setOpenSet] = useState(() => new Set());
+
+  // Reset open state when the underlying calls change (new agent / turn).
+  const groupsRef = useRef(groups);
+  if (groupsRef.current !== groups) {
+    groupsRef.current = groups;
+    if (openSet.size) setOpenSet(new Set());
+  }
+
+  const toggle = useCallback((idx) => {
+    setOpenSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const allOpen = callIndices.length > 0 && openSet.size >= callIndices.length;
+  const toggleAll = useCallback(() => {
+    setOpenSet(allOpen ? new Set() : new Set(callIndices));
+  }, [allOpen, callIndices]);
+
+  return (
+    <div className="agent-conv">
+      {callIndices.length >= 1 && (
+        <div className="agent-conv__controls">
+          <span className="agent-conv__count">
+            {callIndices.length} llm call{callIndices.length === 1 ? '' : 's'}
+            {totalMs > 0 && <span className="agent-conv__total"> · Σ {formatDuration(totalMs)}</span>}
+          </span>
+          {callIndices.length > 1 && (
+            <button type="button" className="agent-conv__toggle-all" onClick={toggleAll} aria-pressed={allOpen}>
+              {allOpen ? 'collapse all' : 'expand all'}
+            </button>
+          )}
+        </div>
+      )}
+      <div className="agent-conv__calls">
+        {groups.map((g) => (
+          <MessageCall
+            key={g.key}
+            stats={callStats(g)}
+            durations={g.llm ? callDurations(g) : null}
+            manifest={g.llm ? callManifest(g) : null}
+            preview={g.llm ? callPreview(g) : null}
+            open={g.llm ? openSet.has(g.callIndex) : true}
+            onToggle={g.llm ? () => toggle(g.callIndex) : undefined}
+          >
+            {g.units.map((u) => renderUnit(u, onZoomIntoSubAgent))}
+          </MessageCall>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ConversationView({ blocks, toolNodeByToolUseId = {}, llmTimings = [], subAgentByToolUseId = {}, onZoomIntoSubAgent }) {
   if (!blocks?.length) return null;
   const units = buildRenderUnits(blocks, {
@@ -186,11 +266,7 @@ function ConversationView({ blocks, toolNodeByToolUseId = {}, llmTimings = [], s
     subAgentByToolUseId,
     llmTimings,
   });
-  return (
-    <div className="conv-view">
-      {units.map((u) => renderUnit(u, onZoomIntoSubAgent))}
-    </div>
-  );
+  return <AgentConversation units={units} onZoomIntoSubAgent={onZoomIntoSubAgent} />;
 }
 
 function UserMessageBlock({ text }) {
@@ -378,6 +454,8 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
         outputTokens: node.outputTokens,
         cacheReadTokens: node.cacheReadTokens,
         cacheCreationTokens: node.cacheCreationTokens,
+        stopReason: node.stopReason,
+        costUsd: node.costUsd,
       });
     }
   }
@@ -404,18 +482,12 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
 
   // Cascade fallback: synthesize render units from agentNodes directly so
   // ToolPair + ParallelCarousel still apply when no capturedBlocks exist.
+  // Same per-call grouping + spectrum as the captured-blocks path — the unit
+  // streams are homogeneous (buildRenderUnitsFromNodes emits llm-timing +
+  // text units), so AgentConversation handles both.
   function renderCascade(srcNodes) {
     const units = buildRenderUnitsFromNodes(srcNodes);
-    return (
-      <div className="agent-cascade">
-        {units.map((u, i) => (
-          <div key={u.key}>
-            {renderUnit(u, onZoomIntoSubAgent)}
-            {i < units.length - 1 && <div className="cascade-connector">{'│'}<br />{'▼'}</div>}
-          </div>
-        ))}
-      </div>
-    );
+    return <AgentConversation units={units} onZoomIntoSubAgent={onZoomIntoSubAgent} />;
   }
 
   const agentContent = (() => {

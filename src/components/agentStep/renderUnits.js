@@ -9,16 +9,19 @@
 //   text            — THOUGHT, TEXT, AGENT_RESPONSE singletons
 //   tool-pair       — TOOL_USE paired with its matching TOOL_RESULT
 //   sub-agent       — TOOL_USE whose id matches a promoted AGENT-kind node
-//   parallel        — N consecutive tool-pair / sub-agent units sharing a
-//                     parallelGroup id; rendered as a single carousel frame
+//   parallel        — N tool-pair / sub-agent units sharing a parallelGroup id
+//                     (i.e. emitted by ONE LLM call); rendered as one carousel
 //   llm-timing      — small inline timing row inserted before each new
 //                     generation group (preserves existing StepPanel layout)
 //   orphan-tool-use — TOOL_USE without a matching TOOL_RESULT (still shown)
 //   orphan-tool-result — TOOL_RESULT not consumed by any prior TOOL_USE
 //
-// Coalescing rule: tool-pair / sub-agent units only coalesce into a parallel
-// unit when they're CONSECUTIVE. An intervening THOUGHT or TEXT breaks the
-// group — we never reorder blocks to fit a parallel frame.
+// Coalescing rule: tool-pair / sub-agent units coalesce into a parallel unit
+// whenever ≥2 of them share a parallelGroup id — the backend's per-response
+// signal for "two or more tools called in one LLM call". Adjacency does NOT
+// matter: an intervening THOUGHT/TEXT (Anthropic interleaved thinking) no
+// longer breaks the group. We never reorder or drop those text blocks; the
+// carousel takes the first member's slot and absorbed members are removed.
 
 function findToolResultIndex(blocks, startIdx, useId) {
   for (let k = startIdx + 1; k < blocks.length; k++) {
@@ -80,6 +83,7 @@ export function buildRenderUnits(blocks, ctx = {}) {
           resultBlock,
           agentNode,
           parallelGroup: agentNode.parallelGroup || null,
+          parallelIndex: agentNode.parallelIndex,
           parallelSiblingNames: agentNode.parallelSiblingNames || null,
           key: `sa-${i}`,
         });
@@ -90,6 +94,7 @@ export function buildRenderUnits(blocks, ctx = {}) {
           resultBlock,
           toolNode: toolNode || null,
           parallelGroup: toolNode?.parallelGroup || null,
+          parallelIndex: toolNode?.parallelIndex,
           parallelSiblingNames: toolNode?.parallelSiblingNames || null,
           key: `tp-${i}`,
         });
@@ -112,44 +117,68 @@ export function buildRenderUnits(blocks, ctx = {}) {
     }
   }
 
-  // ── Pass 2: coalesce consecutive same-parallelGroup atoms ────────────────
-  const units = [];
-  for (let i = 0; i < atoms.length; ) {
-    const a = atoms[i];
-    if ((a.type === 'tool-pair' || a.type === 'sub-agent') && a.parallelGroup) {
-      const gid = a.parallelGroup;
-      const members = [a];
-      let j = i + 1;
-      while (j < atoms.length) {
-        const next = atoms[j];
-        if ((next.type === 'tool-pair' || next.type === 'sub-agent') && next.parallelGroup === gid) {
-          members.push(next);
-          j++;
-        } else break;
-      }
-      if (members.length >= 2) {
-        units.push({
-          type: 'parallel',
-          members,
-          parallelGroup: gid,
-          siblings: a.parallelSiblingNames || members.map(memberDisplayName),
-          key: `pg-${gid}`,
-        });
-        i = j;
-        continue;
-      }
-    }
-    units.push(a);
-    i++;
-  }
-
-  return units;
+  // ── Pass 2: coalesce same-parallelGroup atoms into parallel units ────────
+  return coalesceParallelUnits(atoms);
 }
 
 function memberDisplayName(atom) {
   if (atom.type === 'tool-pair') return atom.toolNode?.toolName || atom.useBlock?.name || 'tool';
   if (atom.type === 'sub-agent') return atom.agentNode?.agentName || 'subagent';
   return '';
+}
+
+// Coalesce tool-pair / sub-agent atoms that share a parallelGroup id into a
+// single `parallel` unit — the backend stamps that id per LLM response, so a
+// shared id means "≥2 tools dispatched in one LLM call". Adjacency-independent:
+// members are bucketed by id across the whole stream, so interleaved THOUGHT/
+// TEXT atoms no longer split a batch. The carousel takes the FIRST member's
+// slot; absorbed members are removed; every non-member atom passes through in
+// place. Members render in model-emitted order (parallelIndex) when present so
+// they line up positionally with parallelSiblingNames.
+function coalesceParallelUnits(atoms) {
+  // Bucket members by parallelGroup id, keeping their stream index.
+  const buckets = new Map(); // gid -> [{ atom, idx }]
+  for (let i = 0; i < atoms.length; i++) {
+    const a = atoms[i];
+    if ((a.type === 'tool-pair' || a.type === 'sub-agent') && a.parallelGroup) {
+      const arr = buckets.get(a.parallelGroup) || [];
+      arr.push({ atom: a, idx: i });
+      buckets.set(a.parallelGroup, arr);
+    }
+  }
+
+  // Decide which atoms get absorbed and where each parallel unit anchors.
+  const parallelByAnchor = new Map(); // anchor stream idx -> parallel unit
+  const absorbed = new Set();          // stream indices folded into a carousel
+  for (const [gid, entries] of buckets) {
+    if (entries.length < 2) continue; // a lone member stays a plain tool-pair
+    const allIndexed = entries.every((e) => Number.isInteger(e.atom.parallelIndex));
+    const ordered = entries
+      .slice()
+      .sort((a, b) => (allIndexed ? a.atom.parallelIndex - b.atom.parallelIndex : a.idx - b.idx));
+    const members = ordered.map((e) => e.atom);
+    const anchor = Math.min(...entries.map((e) => e.idx));
+    parallelByAnchor.set(anchor, {
+      type: 'parallel',
+      members,
+      parallelGroup: gid,
+      siblings: members[0].parallelSiblingNames || members.map(memberDisplayName),
+      key: `pg-${gid}`,
+    });
+    for (const e of entries) absorbed.add(e.idx);
+  }
+
+  // Emit in original order: parallel unit at its anchor slot, others dropped,
+  // every non-member atom untouched.
+  const units = [];
+  for (let i = 0; i < atoms.length; i++) {
+    if (parallelByAnchor.has(i)) {
+      units.push(parallelByAnchor.get(i));
+    } else if (!absorbed.has(i)) {
+      units.push(atoms[i]);
+    }
+  }
+  return units;
 }
 
 // Cascade-fallback variant: when capturedBlocks is empty we synthesize
@@ -166,7 +195,29 @@ export function buildRenderUnitsFromNodes(nodes, onZoomCb = null) {
     if (!n) continue;
 
     if (n.kind === 'LLM_CALL') {
-      atoms.push({ type: 'cascade-llm', node: n, key: `cl-${i}` });
+      // Emit the same boundary + text-unit shape buildRenderUnits produces so
+      // groupRenderUnits folds both paths identically into per-call blocks.
+      atoms.push({
+        type: 'llm-timing',
+        node: {
+          durationMs: n.durationMs,
+          ttftMs: n.ttftMs,
+          model: n.model,
+          inputTokens: n.inputTokens,
+          outputTokens: n.outputTokens,
+          cacheReadTokens: n.cacheReadTokens,
+          cacheCreationTokens: n.cacheCreationTokens,
+          stopReason: n.stopReason,
+          costUsd: n.costUsd,
+        },
+        key: `cl-${i}`,
+      });
+      const inlineBlocks = (n.blocks || []).filter(
+        (b) => b.type === 'THOUGHT' || b.type === 'TEXT' || b.type === 'AGENT_RESPONSE',
+      );
+      for (let bi = 0; bi < inlineBlocks.length; bi++) {
+        atoms.push({ type: 'text', block: inlineBlocks[bi], model: n.model, key: `cl-${i}-b${bi}` });
+      }
     } else if (n.kind === 'HOOK') {
       atoms.push({ type: 'cascade-hook', node: n, key: `ch-${i}` });
     } else if (n.kind === 'TOOL') {
@@ -199,6 +250,7 @@ export function buildRenderUnitsFromNodes(nodes, onZoomCb = null) {
         resultBlock,
         toolNode: n,
         parallelGroup: n.parallelGroup || null,
+        parallelIndex: n.parallelIndex,
         parallelSiblingNames: n.parallelSiblingNames || null,
         key: `tp-${i}`,
       });
@@ -218,6 +270,7 @@ export function buildRenderUnitsFromNodes(nodes, onZoomCb = null) {
         resultBlock: null,
         agentNode: n,
         parallelGroup: n.parallelGroup || null,
+        parallelIndex: n.parallelIndex,
         parallelSiblingNames: n.parallelSiblingNames || null,
         key: `sa-${i}`,
       });
@@ -225,35 +278,5 @@ export function buildRenderUnitsFromNodes(nodes, onZoomCb = null) {
   }
 
   // Same coalescing pass as buildRenderUnits.
-  const units = [];
-  for (let i = 0; i < atoms.length; ) {
-    const a = atoms[i];
-    if ((a.type === 'tool-pair' || a.type === 'sub-agent') && a.parallelGroup) {
-      const gid = a.parallelGroup;
-      const members = [a];
-      let j = i + 1;
-      while (j < atoms.length) {
-        const next = atoms[j];
-        if ((next.type === 'tool-pair' || next.type === 'sub-agent') && next.parallelGroup === gid) {
-          members.push(next);
-          j++;
-        } else break;
-      }
-      if (members.length >= 2) {
-        units.push({
-          type: 'parallel',
-          members,
-          parallelGroup: gid,
-          siblings: a.parallelSiblingNames || members.map(memberDisplayName),
-          key: `pg-${gid}`,
-        });
-        i = j;
-        continue;
-      }
-    }
-    units.push(a);
-    i++;
-  }
-
-  return units;
+  return coalesceParallelUnits(atoms);
 }
