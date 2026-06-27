@@ -2,7 +2,7 @@
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
 import { getAttr } from '../loader.js';
-import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendants, collectToolCallsFromAgentNodes, stampParallelGroup, normalizeAnthropicContentBlock } from './shared.js';
+import { nanoToMs, nanoToDate, buildWorkflowNode, inferToolSchemas, getDescendants, collectToolCallsFromAgentNodes, stampParallelGroup, normalizeAnthropicContentBlock, cachePct, stampAgentTokens, stampAgentAggregates } from './shared.js';
 
 export const FRAMEWORK = 'anthropic-sdk';
 
@@ -195,12 +195,18 @@ export function buildSession(sessionId, raw, orphanSpans = []) {
   let totalCost = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
 
   for (const turn of turns) {
     totalCost += turn.totalCost;
     totalInputTokens += turn.totalInputTokens;
     totalOutputTokens += turn.totalOutputTokens;
+    totalCacheReadTokens += turn.totalCacheReadTokens || 0;
+    totalCacheCreationTokens += turn.totalCacheCreationTokens || 0;
   }
+  const totalContextInputTokens =
+    totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens;
 
   // Session-level catalog is the union of every entry minted during turn
   // construction (plus the orchestrator pre-merge above). Object identity is
@@ -222,6 +228,10 @@ export function buildSession(sessionId, raw, orphanSpans = []) {
     totalCost,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreationTokens,
+    totalContextInputTokens,
+    cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
     systemPrompt,
     availableTools,
     turns,
@@ -375,6 +385,8 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
   let totalCost = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
 
   // PROMPT step - first
   steps.push({ type: 'PROMPT', text: userPrompt });
@@ -462,6 +474,8 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
       totalCost += costUsd;
       totalInputTokens += inputTokens;
       totalOutputTokens += outputTokens;
+      totalCacheReadTokens += cacheReadTokens;
+      totalCacheCreationTokens += cacheCreationTokens;
 
       // Build conversation blocks from response body (OTEL_LOG_RAW_API_BODIES path)
       const respBody = reqId ? responseBodies[reqId] : null;
@@ -831,6 +845,10 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     }
   })(agentNodes, agentToolSpansForTurn);
 
+  // Stamp recursive token rollups on every promoted AGENT-kind node so a
+  // collapsed sub-agent shows the sum of its own LLM calls (incl. nested).
+  stampAgentAggregates(agentNodes);
+
   // Parallel detection — structural, from the SDK's raw OTEL data paths.
   // The Anthropic API emits a parallel batch as N tool_use blocks in ONE
   // assistant response. Two data sources express the same thing:
@@ -964,8 +982,11 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     }
   })(agentNodes);
 
-  // AGENT step (collapsed cascade of all LLM/TOOL/HOOK nodes)
-  steps.push({ type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts, availableTools: stepAvailableTools });
+  // AGENT step (collapsed cascade of all LLM/TOOL/HOOK nodes). Stamp the step
+  // with its own agg* token rollup so the collapsed agent shows total in/out.
+  const agentStep = { type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre, upstreamPost, userPrompt, toolCallCounts, availableTools: stepAvailableTools };
+  stampAgentTokens(agentStep);
+  steps.push(agentStep);
 
   // FINAL step
   steps.push({
@@ -973,6 +994,10 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     totalCost,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreationTokens,
+    totalContextInputTokens: totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens,
+    cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
     durationMs,
   });
 
@@ -985,6 +1010,7 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     return pStart <= iStart && pEnd >= iEnd;
   }) || null;
   const agentStepData = { type: 'AGENT', nodes: agentNodes, capturedBlocks, userPrompt, toolCallCounts, availableTools: stepAvailableTools };
+  stampAgentTokens(agentStepData);
   const workflowGraph = buildWorkflowGraph(pipelineSpan, childrenOf, interactionSpan, agentStepData, preSpans, postSpans);
 
   return {
@@ -996,6 +1022,10 @@ function buildTurn(idx, interactionSpan, logs, llmSpanByRequestId, toolSpanByUse
     totalCost,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreationTokens,
+    totalContextInputTokens: totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens,
+    cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
     steps,
     workflowGraph,
     availableTools: turnAvailableTools,

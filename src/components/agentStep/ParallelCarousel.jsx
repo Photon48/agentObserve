@@ -50,16 +50,18 @@ export function ParallelCarousel({ members, siblings, onZoomIntoSubAgent }) {
 
   // Lock the frame to the max of each member's *natural collapsed* height
   // so swapping siblings doesn't make the nav row jump as content size
-  // differs. Measured once per idx change (the inner content remounts via
-  // key={idx} so every sibling enters in its default state). User-driven
-  // expand/collapse is NOT recorded — the frame's min-height floor is the
-  // natural set, and content grows/shrinks freely above that floor.
+  // differs. Each idx is measured only on its FIRST mount — when expansion
+  // state is persistent (see ExpansionContext), a revisited sibling can mount
+  // already expanded, and re-measuring then would inflate the floor with the
+  // expanded height. Recording once captures the natural (collapsed) height
+  // the first time the sibling is seen; content grows/shrinks freely above
+  // that floor afterward.
   const innerRef = useRef(null);
   const naturalHeights = useRef(new Map());
   const [lockHeight, setLockHeight] = useState(0);
   useLayoutEffect(() => {
     const el = innerRef.current;
-    if (!el) return;
+    if (!el || naturalHeights.current.has(idx)) return;
     // Defer one frame so any inner layout (mono fallback, status-chip
     // measurement) has settled before we record the natural height.
     const rafId = requestAnimationFrame(() => {

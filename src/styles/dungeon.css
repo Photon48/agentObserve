@@ -884,6 +884,10 @@ body::before {
   text-align: right;
 }
 
+/* Per-turn timeline: a row of equal-width, equal-height clickable bars. Token
+   weight is encoded as a solid color-intensity ramp (--intensity), not bar
+   height — faint/mellow for light turns, bold amber for the heaviest. Lets an
+   operator scan a session and see which message carried most of the tokens. */
 .timeline-bar__segments {
   flex: 1;
   display: flex;
@@ -893,13 +897,20 @@ body::before {
 }
 
 .timeline-bar__segment {
+  appearance: none;
   flex: 1;
   min-width: 2px;
-  background: var(--border);
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 0;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
+  cursor: pointer;
+  /* Solid intensity ramp: faint dim at --intensity 0 → bold amber at 1.
+     Wide range (6%→90%) so mid-weight turns read as a clear, distinct step. */
+  background: color-mix(in oklab,
+    var(--fg-amber) calc(6% + 84% * var(--intensity, 0)),
+    var(--bg-raised));
+  transition: background 0.15s var(--ease-out), border-color 0.15s,
+              transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .timeline-bar__segment:hover {
@@ -907,12 +918,20 @@ body::before {
   transform: scaleY(1.3);
 }
 
-.timeline-bar__segment--past {
+/* Zero-token turn (e.g. /clear): neutral baseline, no heat. */
+.timeline-bar__segment--empty {
   background: var(--bg-raised);
 }
 
+/* Past turns keep their heat hue but dimmed. */
+.timeline-bar__segment--past {
+  opacity: 0.5;
+}
+
+/* Active turn: green ring + glow, retains its intensity fill underneath. */
 .timeline-bar__segment--active {
-  background: var(--fg-green);
+  opacity: 1;
+  border-color: var(--fg-green);
   box-shadow: 0 0 6px color-mix(in oklab, var(--fg-green) 55%, transparent);
 }
 
@@ -1527,10 +1546,12 @@ body::before {
   margin-bottom: 2px;
 }
 
-.llm-timing__label { color: var(--fg-amber); font-weight: 700; }
-.llm-timing__model { color: var(--fg-dim); }
-.llm-timing__dur   { color: var(--fg-amber); }
-.llm-timing__ttft  { color: var(--fg-dim); }
+.llm-timing__label  { color: var(--fg-amber); font-weight: 700; }
+.llm-timing__model  { color: var(--fg-dim); }
+.llm-timing__tokens { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.llm-timing__cache  { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.llm-timing__dur    { color: var(--fg-amber); }
+.llm-timing__ttft   { color: var(--fg-dim); }
 
 /* ── Tool schema dropdown ───────────────────────────────────── */
 
@@ -1946,7 +1967,11 @@ body::before {
   max-width: 920px;
   margin: 0 auto;
   padding: 40px 32px;
-  overflow-y: auto;
+  /* overflow stays visible: the real scroll container is
+     .stacked-panel__scroll. An overflow:auto here (with no height cap) never
+     scrolls but would still capture position:sticky, breaking the message
+     spectrum's sticky-to-panel-bottom behaviour. */
+  overflow: visible;
 }
 .detail-view__header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-weight: 700; letter-spacing: 0.02em; }
 .detail-view__kind   { color: var(--fg-amber); font-size: 13px; }
@@ -2277,7 +2302,29 @@ button.tool-schema__row-top {
   white-space: nowrap;
 }
 .tool-card__tokens-sep { color: var(--fg-dim); }
+.tool-card__tokens-approx { color: var(--fg-dim); font-style: italic; }
 .tool-card__subagent-summary { color: var(--fg-dim); }
+
+/* Aggregated token rollup banner at the top of an AGENT step / sub-agent zoom */
+.agent-token-rollup {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev, rgba(255, 255, 255, 0.02));
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-feature-settings: 'tnum';
+}
+.agent-token-rollup__label {
+  color: var(--fg-amber);
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
 .tool-card__err-msg {
   flex: 1;
   min-width: 0;
@@ -2731,3 +2778,265 @@ button.tool-schema__row-top {
   color: var(--fg-soft);
   background: var(--bg-surface);
 }
+
+/* ── Agent view: collapsible per-LLM-call blocks ───────────────────
+ *
+ * The agent cascade is grouped into one block per LLM call (MessageCall),
+ * collapsed by default. The compact header carries the call's identity and a
+ * mini IN/OUT token meter (scaled within this turn); expanding reveals the
+ * body — the thinking, text, and tool call(s) the call produced. Token
+ * magnitude across the whole session is shown on the turn timeline, not here.
+ */
+.agent-conv {
+  display: block;
+  width: 100%;
+}
+
+.agent-conv__controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.agent-conv__count {
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.agent-conv__total { color: var(--fg-amber); }
+.agent-conv__toggle-all {
+  appearance: none;
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: color 150ms var(--ease-out), border-color 150ms var(--ease-out), background 150ms var(--ease-out);
+}
+.agent-conv__toggle-all:hover {
+  color: var(--fg-amber);
+  border-color: var(--fg-amber);
+  background: color-mix(in oklab, var(--fg-amber) 6%, transparent);
+}
+
+.agent-conv__calls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── One LLM call as one collapsible block ─────────────────────── */
+.msg-call {
+  border: 1px solid var(--border);
+  border-left: 3px solid color-mix(in oklab, var(--fg-green) 45%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  overflow: hidden;
+  transition: border-color 150ms var(--ease-out);
+}
+.msg-call--open {
+  border-left-color: var(--fg-green);
+}
+
+/* Leading header-less group (orphan units before the first call). */
+.msg-call--lead {
+  border-left-color: var(--border);
+  background: transparent;
+  border: none;
+}
+.msg-call--lead > .msg-call__body { padding: 0; }
+
+/* The whole header is the collapse toggle. */
+.msg-call__header {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 12px;
+  background: var(--bg-raised);
+  border: none;
+  cursor: pointer;
+  transition: background 150ms var(--ease-out);
+}
+.msg-call__header:hover {
+  background: color-mix(in oklab, var(--fg-amber) 6%, var(--bg-raised));
+}
+.msg-call--open .msg-call__header {
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── Row 1: identity (left) + aligned metric columns (right) ────── */
+.msg-call__id {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.msg-call__chevron {
+  color: var(--fg-dim);
+  font-size: 10px;
+  flex: none;
+  align-self: center;
+}
+.msg-call__index {
+  color: var(--fg-green);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.msg-call__model {
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 4ch;
+  flex: 0 1 auto;
+}
+/* Stop reason — quiet by default (tool_use repeats on nearly every call);
+   amber only when it's an anomaly the operator should notice. */
+.msg-call__stop {
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  flex: none;
+}
+.msg-call__stop--flag { color: var(--fg-amber); }
+
+/* Metrics, pinned right: the wall-clock duration, then a rule, then the
+   in / out / cache cost group. The rule keeps time visually separate from the
+   token figures (time is "how long", tokens are "how much"). Within each token
+   cell the label hugs its value so the pairing reads at a glance; cells are
+   fixed-width so values still line up into columns down a stack of calls. */
+.msg-call__metrics {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.msg-metric--dur {
+  color: var(--fg-amber);
+  font-weight: 600;
+  text-align: right;
+  min-width: 52px;
+}
+.msg-call__tokens {
+  display: flex;
+  gap: 14px;
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+/* One token cell: label + value kept together, the pair pinned to the cell's
+   right edge so values align column-to-column across blocks. */
+.msg-metric {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 5px;
+  width: 64px; /* in / out */
+  color: var(--fg-muted);
+}
+.msg-metric--cache { width: 68px; }
+.msg-metric__k { color: var(--fg-dim); }
+
+/* ── Row 2: inline text / response preview ─────────────────────── */
+.msg-call__preview {
+  padding-left: 22px; /* hang under the model, past chevron + #index */
+  color: var(--fg-soft);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.msg-call__preview--thought { color: var(--fg-muted); font-style: italic; }
+
+/* ── Row 3: tools the call dispatched ──────────────────────────── */
+.msg-call__manifest {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 22px; /* hang under the model, past chevron + #index */
+  min-width: 0;
+}
+.msg-call__manifest--empty {
+  color: var(--fg-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Tool the call dispatched. */
+.msg-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in oklab, var(--fg-cyan) 30%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--fg-cyan) 7%, transparent);
+  color: var(--fg-cyan);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  max-width: 22ch;
+  overflow: hidden;
+}
+.msg-pill__name { overflow: hidden; text-overflow: ellipsis; }
+.msg-pill--agent {
+  border-color: color-mix(in oklab, var(--fg-amber) 40%, var(--border));
+  background: color-mix(in oklab, var(--fg-amber) 9%, transparent);
+  color: var(--fg-amber);
+}
+.msg-pill__icon  { font-size: 10px; }
+.msg-pill__count { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+
+.msg-call__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+/* Expanded breakdown — purely ADDITIVE to the header: the latency split (left)
+   and the input composition (right) behind row-1's totals. Never restates the
+   totals themselves. */
+.msg-call__breakdown {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.msg-call__bd-group {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.msg-call__bd-group--tok { color: var(--fg-dim); }
+.msg-call__bd-k { color: var(--fg-dim); margin-right: 3px; }

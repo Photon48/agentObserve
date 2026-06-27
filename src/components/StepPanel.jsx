@@ -1,12 +1,16 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
-import { formatCost, formatTokens, formatDuration } from '../utils/format.js';
+import { useState, useMemo, useRef, useCallback } from 'react';
+import { formatCost, formatTokens, formatDuration, formatPct } from '../utils/format.js';
 import { CollapsibleText } from './agentStep/CollapsibleText.jsx';
 import { ToolPair } from './agentStep/ToolPair.jsx';
 import { SubAgentPair } from './agentStep/SubAgentPair.jsx';
 import { ParallelCarousel } from './agentStep/ParallelCarousel.jsx';
 import { buildRenderUnits, buildRenderUnitsFromNodes } from './agentStep/renderUnits.js';
+import { groupRenderUnits, callStats, callDurations, callManifest, callPreview } from './agentStep/callGroups.js';
+import { MessageCall } from './agentStep/MessageCall.jsx';
+import { ExpansionContext } from './agentStep/ExpansionContext.jsx';
 import { prettifyMaybeJson } from '../utils/prettyJson.js';
 
 function PromptStep({ step }) {
@@ -20,7 +24,7 @@ function PromptStep({ step }) {
 
 // ── Conversation blocks ──────────────────────────────────────────────────────
 
-function ThoughtBlock({ block }) {
+function ThoughtBlock({ block, idKey }) {
   // Anthropic's extended-thinking is privacy-redacted upstream — the model
   // emitted reasoning but content is withheld. Show a labeled badge instead
   // of an "(empty)" CollapsibleText so the operator understands what's going
@@ -31,6 +35,7 @@ function ThoughtBlock({ block }) {
         <div className="conv-block__header">
           ◈ THINKING
           <span className="conv-block__badge"> · redacted by anthropic</span>
+          {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
         </div>
         <div className="conv-block__body conv-block__body--dim">
           (model emitted reasoning, content withheld upstream)
@@ -40,28 +45,50 @@ function ThoughtBlock({ block }) {
   }
   return (
     <div className="conv-block conv-block--thought">
-      <div className="conv-block__header">◈ THINKING</div>
-      <CollapsibleText text={block.text} previewLines={8} />
+      <div className="conv-block__header">
+        ◈ THINKING
+        {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
+      </div>
+      <CollapsibleText text={block.text} previewLines={8} expandKey={idKey} />
     </div>
   );
 }
 
-function TextBlock({ block, model }) {
+function TextBlock({ block, model, idKey }) {
   const label = model || 'ASSISTANT';
   return (
     <div className="conv-block conv-block--text">
-      <div className="conv-block__header">◆ {label}</div>
-      <CollapsibleText text={block.text} previewLines={10} />
+      <div className="conv-block__header">
+        ◆ {label}
+        {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
+      </div>
+      <CollapsibleText text={block.text} previewLines={10} expandKey={idKey} />
     </div>
   );
 }
 
 function LLMTimingRow({ node }) {
   if (!node) return null;
+  // The exact per-message (per-LLM-call) token figures, straight from the API.
+  // Input the model saw = fresh + cache-read + cache-write; cache% = share served
+  // from cache. Shown so an operator can see where tokens go message by message.
+  const cacheRead = node.cacheReadTokens || 0;
+  const cacheCreation = node.cacheCreationTokens || 0;
+  const totalIn = (node.inputTokens || 0) + cacheRead + cacheCreation;
+  const pct = totalIn > 0 ? Math.round((cacheRead / totalIn) * 100) : 0;
   return (
     <div className="llm-timing-row">
       <span className="llm-timing__label">◆ LLM</span>
       <span className="llm-timing__model">{node.model}</span>
+      {totalIn > 0 && (
+        <span className="llm-timing__tokens">in {formatTokens(totalIn)}</span>
+      )}
+      {cacheRead > 0 && (
+        <span className="llm-timing__cache">cache {formatPct(pct)}</span>
+      )}
+      {node.outputTokens > 0 && (
+        <span className="llm-timing__tokens">out {formatTokens(node.outputTokens)}</span>
+      )}
       <span className="llm-timing__dur">{formatDuration(node.durationMs)}</span>
       {node.ttftMs > 0 && (
         <span className="llm-timing__ttft">ttft {formatDuration(node.ttftMs)}</span>
@@ -70,32 +97,35 @@ function LLMTimingRow({ node }) {
   );
 }
 
-function AgentResponseBlock({ block }) {
+function AgentResponseBlock({ block, idKey }) {
   return (
     <div className="conv-block conv-block--agent-response">
-      <div className="conv-block__header">★ RESPONSE</div>
-      <CollapsibleText text={block.text} previewLines={10} />
+      <div className="conv-block__header">
+        ★ RESPONSE
+        {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
+      </div>
+      <CollapsibleText text={block.text} previewLines={10} expandKey={idKey} />
     </div>
   );
 }
 
-function TextUnitBlock({ block, model }) {
+function TextUnitBlock({ block, model, idKey }) {
   switch (block.type) {
-    case 'THOUGHT':        return <ThoughtBlock block={block} />;
-    case 'TEXT':           return <TextBlock block={block} model={model} />;
-    case 'AGENT_RESPONSE': return <AgentResponseBlock block={block} />;
+    case 'THOUGHT':        return <ThoughtBlock block={block} idKey={idKey} />;
+    case 'TEXT':           return <TextBlock block={block} model={model} idKey={idKey} />;
+    case 'AGENT_RESPONSE': return <AgentResponseBlock block={block} idKey={idKey} />;
     default: return null;
   }
 }
 
-function OrphanToolResultBlock({ block }) {
+function OrphanToolResultBlock({ block, idKey }) {
   return (
     <div className="conv-block conv-block--tool-result conv-block--orphan">
       <div className="conv-block__header">
         ↩ RESULT  {block?.name}
         <span className="conv-block__orphan-tag" title="no matching tool_use">(unmatched)</span>
       </div>
-      <CollapsibleText text={prettifyMaybeJson(block?.text || '')} previewLines={6} />
+      <CollapsibleText text={prettifyMaybeJson(block?.text || '')} previewLines={6} expandKey={idKey} />
     </div>
   );
 }
@@ -105,7 +135,7 @@ function renderUnit(u, onZoomIntoSubAgent) {
     case 'llm-timing':
       return <LLMTimingRow key={u.key} node={u.node} />;
     case 'text':
-      return <TextUnitBlock key={u.key} block={u.block} model={u.model} />;
+      return <TextUnitBlock key={u.key} block={u.block} model={u.model} idKey={u.key} />;
     case 'tool-pair':
       return (
         <ToolPair
@@ -144,13 +174,90 @@ function renderUnit(u, onZoomIntoSubAgent) {
         />
       );
     case 'orphan-tool-result':
-      return <OrphanToolResultBlock key={u.key} block={u.block} />;
+      return <OrphanToolResultBlock key={u.key} block={u.block} idKey={u.key} />;
     case 'cascade-llm':
       return <LLMNode key={u.key} node={u.node} />;
     case 'cascade-hook':
       return <HookNode key={u.key} node={u.node} />;
     default: return null;
   }
+}
+
+// Groups a flat render-unit stream into per-LLM-call blocks (MessageCall),
+// each collapsed by default. The compact block shows in / cache / out / time /
+// ttft with mini bars; expanding reveals the thinking / text / tool-use blocks.
+// Open state is held here (a Set of callIndex) so the expand-all / collapse-all
+// toggle can drive every block at once. Token magnitude across the whole
+// session is shown on the turn timeline (TimelineBar), not here.
+function AgentConversation({ units, onZoomIntoSubAgent }) {
+  const groups = useMemo(() => groupRenderUnits(units), [units]);
+  const callIndices = useMemo(
+    () => groups.filter((g) => g.llm).map((g) => g.callIndex),
+    [groups],
+  );
+  // Sum of each call's combined (llm + tool) duration. Within one agent the
+  // calls are sequential, so this tiles the agent's own total — the figure the
+  // collapsed block durations add up to.
+  const totalMs = useMemo(
+    () => groups.reduce((sum, g) => (g.llm ? sum + callDurations(g).totalMs : sum), 0),
+    [groups],
+  );
+  // Collapsed by default — start with an empty open set.
+  const [openSet, setOpenSet] = useState(() => new Set());
+
+  // Reset open state when the underlying calls change (new agent / turn).
+  const groupsRef = useRef(groups);
+  if (groupsRef.current !== groups) {
+    groupsRef.current = groups;
+    if (openSet.size) setOpenSet(new Set());
+  }
+
+  const toggle = useCallback((idx) => {
+    setOpenSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const allOpen = callIndices.length > 0 && openSet.size >= callIndices.length;
+  const toggleAll = useCallback(() => {
+    setOpenSet(allOpen ? new Set() : new Set(callIndices));
+  }, [allOpen, callIndices]);
+
+  return (
+    <div className="agent-conv">
+      {callIndices.length >= 1 && (
+        <div className="agent-conv__controls">
+          <span className="agent-conv__count">
+            {callIndices.length} llm call{callIndices.length === 1 ? '' : 's'}
+            {totalMs > 0 && <span className="agent-conv__total"> · Σ {formatDuration(totalMs)}</span>}
+          </span>
+          {callIndices.length > 1 && (
+            <button type="button" className="agent-conv__toggle-all" onClick={toggleAll} aria-pressed={allOpen}>
+              {allOpen ? 'collapse all' : 'expand all'}
+            </button>
+          )}
+        </div>
+      )}
+      <div className="agent-conv__calls">
+        {groups.map((g) => (
+          <MessageCall
+            key={g.key}
+            stats={callStats(g)}
+            durations={g.llm ? callDurations(g) : null}
+            manifest={g.llm ? callManifest(g) : null}
+            preview={g.llm ? callPreview(g) : null}
+            open={g.llm ? openSet.has(g.callIndex) : true}
+            onToggle={g.llm ? () => toggle(g.callIndex) : undefined}
+          >
+            {g.units.map((u) => renderUnit(u, onZoomIntoSubAgent))}
+          </MessageCall>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function ConversationView({ blocks, toolNodeByToolUseId = {}, llmTimings = [], subAgentByToolUseId = {}, onZoomIntoSubAgent }) {
@@ -160,11 +267,7 @@ function ConversationView({ blocks, toolNodeByToolUseId = {}, llmTimings = [], s
     subAgentByToolUseId,
     llmTimings,
   });
-  return (
-    <div className="conv-view">
-      {units.map((u) => renderUnit(u, onZoomIntoSubAgent))}
-    </div>
-  );
+  return <AgentConversation units={units} onZoomIntoSubAgent={onZoomIntoSubAgent} />;
 }
 
 function UserMessageBlock({ text }) {
@@ -211,10 +314,21 @@ function UpstreamSection({ nodes, position }) {
 // ── Legacy cascade (fallback when no blocks) ─────────────────────────────────
 
 function LLMNode({ node }) {
+  // Input the model actually saw = fresh + cache-read (cascading context) +
+  // cache-write. cache% = share served from cache.
+  const cacheRead = node.cacheReadTokens || 0;
+  const cacheCreation = node.cacheCreationTokens || 0;
+  const totalIn = (node.inputTokens || 0) + cacheRead + cacheCreation;
+  const pct = totalIn > 0 ? Math.round((cacheRead / totalIn) * 100) : 0;
+  const breakdown = [
+    `fresh ${formatTokens(node.inputTokens)}`,
+    cacheRead > 0 && `cache-read ${formatTokens(cacheRead)}`,
+    cacheCreation > 0 && `cache-write ${formatTokens(cacheCreation)}`,
+  ].filter(Boolean).join(' · ');
   const meta = [
-    `in: ${formatTokens(node.inputTokens)}`,
+    `in: ${formatTokens(totalIn)} (${breakdown})`,
+    cacheRead > 0 && `cache ${formatPct(pct)}`,
     `out: ${formatTokens(node.outputTokens)}`,
-    node.cacheReadTokens > 0 && `cache: ${formatTokens(node.cacheReadTokens)}`,
     `cost: ${formatCost(node.costUsd)}`,
     node.ttftMs > 0 && `ttft: ${formatDuration(node.ttftMs)}`,
     `dur: ${formatDuration(node.durationMs)}`,
@@ -295,6 +409,13 @@ function SubAgentNode({ node, onZoom }) {
         {nestedAgents > 0 && <span>{nestedAgents} sub-agent</span>}
         {node.durationMs > 0 && <span>{formatDuration(node.durationMs)}</span>}
       </div>
+      {node.aggTotalInputTokens > 0 && (
+        <div className="cascade-agent__summary">
+          <span>in {formatTokens(node.aggTotalInputTokens)}</span>
+          <span>out {formatTokens(node.aggOutputTokens)}</span>
+          {node.aggCacheReadTokens > 0 && <span>cache {formatPct(node.cachePct)}</span>}
+        </div>
+      )}
     </button>
   );
 }
@@ -312,6 +433,18 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
   const upstreamPre  = step.upstreamPre  || [];
   const upstreamPost = step.upstreamPost || [];
 
+  // One expand/collapse store per AGENT step. Holds every card/text block's
+  // expanded state keyed by stable id so it survives carousel sibling swaps and
+  // MessageCall body collapse. Reset when the step changes so state never leaks
+  // across steps (mirrors AgentConversation's openSet reset).
+  const expansionStore = useRef(null);
+  if (expansionStore.current === null) expansionStore.current = new Map();
+  const stepRef = useRef(step);
+  if (stepRef.current !== step) {
+    stepRef.current = step;
+    expansionStore.current = new Map();
+  }
+
   // Cross-reference indices used by buildRenderUnits to pair TOOL_USE
   // blocks with their TOOL agentNode (for status / parallelGroup) and to
   // splice promoted AGENT-kind sub-agents in at their spawning toolUseId.
@@ -326,7 +459,17 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
       subAgentNodes.push(node);
       if (node.toolUseId) subAgentByToolUseId[node.toolUseId] = node;
     } else if (node.kind === 'LLM_CALL') {
-      llmTimings.push({ durationMs: node.durationMs, ttftMs: node.ttftMs, model: node.model });
+      llmTimings.push({
+        durationMs: node.durationMs,
+        ttftMs: node.ttftMs,
+        model: node.model,
+        inputTokens: node.inputTokens,
+        outputTokens: node.outputTokens,
+        cacheReadTokens: node.cacheReadTokens,
+        cacheCreationTokens: node.cacheCreationTokens,
+        stopReason: node.stopReason,
+        costUsd: node.costUsd,
+      });
     }
   }
 
@@ -352,18 +495,12 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
 
   // Cascade fallback: synthesize render units from agentNodes directly so
   // ToolPair + ParallelCarousel still apply when no capturedBlocks exist.
+  // Same per-call grouping + spectrum as the captured-blocks path — the unit
+  // streams are homogeneous (buildRenderUnitsFromNodes emits llm-timing +
+  // text units), so AgentConversation handles both.
   function renderCascade(srcNodes) {
     const units = buildRenderUnitsFromNodes(srcNodes);
-    return (
-      <div className="agent-cascade">
-        {units.map((u, i) => (
-          <div key={u.key}>
-            {renderUnit(u, onZoomIntoSubAgent)}
-            {i < units.length - 1 && <div className="cascade-connector">{'│'}<br />{'▼'}</div>}
-          </div>
-        ))}
-      </div>
-    );
+    return <AgentConversation units={units} onZoomIntoSubAgent={onZoomIntoSubAgent} />;
   }
 
   const agentContent = (() => {
@@ -404,7 +541,21 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
   })();
 
   return (
+    <ExpansionContext.Provider value={expansionStore.current}>
     <div className="agent-step-wrap">
+      {step.aggTotalInputTokens > 0 && (
+        <div className="agent-token-rollup">
+          <span className="agent-token-rollup__label">AGENT TOTAL</span>
+          <span>in {formatTokens(step.aggTotalInputTokens)}</span>
+          <span className="text-dim">
+            (fresh {formatTokens(step.aggInputTokens)}
+            {step.aggCacheReadTokens > 0 && ` · cache-read ${formatTokens(step.aggCacheReadTokens)}`}
+            {step.aggCacheCreationTokens > 0 && ` · cache-write ${formatTokens(step.aggCacheCreationTokens)}`})
+          </span>
+          {step.aggCacheReadTokens > 0 && <span>cache {formatPct(step.cachePct)}</span>}
+          <span>out {formatTokens(step.aggOutputTokens)}</span>
+        </div>
+      )}
       <UpstreamSection nodes={upstreamPre} position="pre" />
       {(upstreamPre.length > 0 || upstreamPost.length > 0) && (
         <div className="downstream-section__divider">↓ AGENT</div>
@@ -413,6 +564,7 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
       {agentContent}
       <UpstreamSection nodes={upstreamPost} position="post" />
     </div>
+    </ExpansionContext.Provider>
   );
 }
 
@@ -424,7 +576,29 @@ function FinalStep({ step }) {
         <span className="final-key">total cost</span>
         <span className="final-val">{formatCost(step.totalCost)}</span>
         <span className="final-key">input tokens</span>
-        <span className="final-val final-val--green">{formatTokens(step.totalInputTokens)}</span>
+        <span className="final-val final-val--green">
+          {formatTokens(step.totalContextInputTokens ?? step.totalInputTokens)}
+        </span>
+        <span className="final-key">↳ fresh</span>
+        <span className="final-val">{formatTokens(step.totalInputTokens)}</span>
+        {step.totalCacheReadTokens > 0 && (
+          <>
+            <span className="final-key">↳ cache read</span>
+            <span className="final-val">{formatTokens(step.totalCacheReadTokens)}</span>
+          </>
+        )}
+        {step.totalCacheCreationTokens > 0 && (
+          <>
+            <span className="final-key">↳ cache write</span>
+            <span className="final-val">{formatTokens(step.totalCacheCreationTokens)}</span>
+          </>
+        )}
+        {step.totalCacheReadTokens > 0 && (
+          <>
+            <span className="final-key">cache hit</span>
+            <span className="final-val">{formatPct(step.cachePct)}</span>
+          </>
+        )}
         <span className="final-key">output tokens</span>
         <span className="final-val final-val--green">{formatTokens(step.totalOutputTokens)}</span>
         <span className="final-key">turn duration</span>

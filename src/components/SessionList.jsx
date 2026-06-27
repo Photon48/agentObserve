@@ -3,7 +3,7 @@
 // See LICENSE in the project root for license terms.
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSessions } from '../hooks/useSessions.js';
-import { formatCost, formatTokens, formatDate, truncateId } from '../utils/format.js';
+import { formatCost, formatTokens, formatDate, truncateId, formatPct } from '../utils/format.js';
 import { FRAMEWORK_ORDER } from '../utils/framework.js';
 import { SessionTabs } from './SessionTabs.jsx';
 
@@ -240,6 +240,7 @@ export function SessionList({ onSelect }) {
               <th className="col-cost">COST</th>
               <th className="col-tokens">IN TOKENS</th>
               <th className="col-tokens">OUT TOKENS</th>
+              <th className="col-tokens">CACHE</th>
             </tr>
           </thead>
           <tbody>
@@ -254,8 +255,9 @@ export function SessionList({ onSelect }) {
                 <td className="col-date">{formatDate(s.startTime)}</td>
                 <td className="col-turns">{s.turnCount}</td>
                 <td className="col-cost">{formatCost(s.totalCost)}</td>
-                <td className="col-tokens">{formatTokens(s.totalInputTokens)}</td>
+                <td className="col-tokens">{formatTokens(s.totalContextInputTokens ?? s.totalInputTokens)}</td>
                 <td className="col-tokens">{formatTokens(s.totalOutputTokens)}</td>
+                <td className="col-tokens">{s.totalCacheReadTokens > 0 ? formatPct(s.cachePct) : '—'}</td>
               </tr>
             ))}
           </tbody>

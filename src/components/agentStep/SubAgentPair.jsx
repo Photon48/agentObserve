@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
-import { formatDuration } from '../../utils/format.js';
+import { formatDuration, formatTokens, formatPct } from '../../utils/format.js';
 
 // Sub-agent (Task tool call) rendered with the same compact, fixed-height
 // card geometry as ToolPair, so every unit in a cascade — and every frame in
@@ -47,6 +47,22 @@ export function SubAgentPair({ useBlock, agentNode, onZoom }) {
           <span className="tool-card__subagent-summary">{summary}</span>
           <span className="tool-card__chevron tool-card__chevron--zoom" aria-hidden="true">zoom ▸</span>
         </div>
+
+        {agentNode?.aggTotalInputTokens > 0 && (
+          <div className="tool-card__meta">
+            <span className="tool-card__tokens">
+              IN {formatTokens(agentNode.aggTotalInputTokens)}
+              <span className="tool-card__tokens-sep"> · </span>
+              OUT {formatTokens(agentNode.aggOutputTokens)}
+              {agentNode.aggCacheReadTokens > 0 && (
+                <>
+                  <span className="tool-card__tokens-sep"> · </span>
+                  cache {formatPct(agentNode.cachePct)}
+                </>
+              )}
+            </span>
+          </div>
+        )}
       </button>
     </div>
   );

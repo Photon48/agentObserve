@@ -5,6 +5,7 @@ import { useRef, useState } from 'react';
 import { CollapsibleText } from './CollapsibleText.jsx';
 import { StatusChip } from './StatusChip.jsx';
 import { useToolOccurrence } from './ToolNavContext.jsx';
+import { usePersistentToggle } from './ExpansionContext.jsx';
 import { formatDuration, formatTokens } from '../../utils/format.js';
 import { formatToolInput, prettifyMaybeJson } from '../../utils/prettyJson.js';
 
@@ -17,9 +18,15 @@ import { formatToolInput, prettifyMaybeJson } from '../../utils/prettyJson.js';
 // the cascade stays uniform; the result side is marked missing.
 
 export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
-  const [open, setOpen] = useState(false);
-  // Once opened, keep the detail mounted so CollapsibleText state survives a
-  // collapse and the close transition has something to animate.
+  // Persist the card's open state (and each inner block's expanded state, via
+  // the keys below) keyed on the stable toolUseId so it survives carousel
+  // sibling swaps and MessageCall body collapse/re-expand. Falls back to local
+  // state when there's no toolUseId or no ExpansionContext.
+  const cardKey = useBlock?.id ? `tool:${useBlock.id}` : null;
+  const [open, setOpen] = usePersistentToggle(cardKey, false);
+  // Once opened, keep the detail mounted so the close transition has something
+  // to animate. Local-only is fine: when `open` is restored true on remount the
+  // detail renders regardless of this flag.
   const [hasOpened, setHasOpened] = useState(false);
 
   const inputText = formatToolInput(useBlock?.input);
@@ -33,10 +40,12 @@ export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
   const toolName = toolNode?.toolName || useBlock?.name || 'tool';
   const toolUseId = useBlock?.id || '';
 
-  // IN = tokens of the tool input, OUT = tokens of the tool result. null when
-  // the field is absent so we render an em dash rather than a misleading "0".
-  const inputTokens = toolNode?.toolInputTokens ?? null;
-  const outputTokens = resultBlock?.outputTokens ?? toolNode?.toolOutputTokens ?? null;
+  // A tool has no token cost of its own. CALL = the model's output tokens that
+  // wrote this tool_use (its share of the dispatching message's output). RESULT
+  // = the result text tokens read by the NEXT message. null when unknown so we
+  // render an em dash rather than a misleading "0".
+  const callTokens = toolNode?.callTokens ?? useBlock?.tokens ?? null;
+  const resultTokens = resultBlock?.tokens ?? toolNode?.resultTokens ?? null;
 
   const rootRef = useRef(null);
   useToolOccurrence(toolName, rootRef);
@@ -46,7 +55,7 @@ export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
     setHasOpened(true);
   };
 
-  const tokLabel = (n) => (n == null ? '—' : `~${formatTokens(n)} tok`);
+  const tokLabel = (n) => (n == null ? '—' : `${formatTokens(n)} tok`);
 
   return (
     <div
@@ -76,10 +85,13 @@ export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
         </div>
 
         <div className="tool-card__meta">
-          <span className="tool-card__tokens">
-            IN {tokLabel(inputTokens)}
+          <span
+            className="tool-card__tokens"
+            title="A tool has no token cost of its own. CALL = the model output tokens that wrote this tool call; RESULT = the result text tokens read back on the next message. Both are derived from the LLM calls' exact token counts."
+          >
+            CALL {tokLabel(callTokens)}
             <span className="tool-card__tokens-sep"> · </span>
-            OUT {tokLabel(outputTokens)}
+            RESULT {tokLabel(resultTokens)}
           </span>
           {!success && errorText && (
             <span className="tool-card__err-msg" title={errorText}>{errorText}</span>
@@ -99,8 +111,13 @@ export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
                 <div className="conv-block__header">
                   ⚙ TOOL_USE  {toolName}
                   {toolUseId && <span className="tool-pair__id" title={toolUseId}>{shortId(toolUseId)}</span>}
+                  {callTokens != null && <span className="conv-block__badge"> · {formatTokens(callTokens)} tok</span>}
                 </div>
-                <CollapsibleText text={inputText} previewLines={8} />
+                <CollapsibleText
+                  text={inputText}
+                  previewLines={8}
+                  expandKey={cardKey ? `${cardKey}:input` : null}
+                />
               </div>
 
               {orphan ? (
@@ -115,8 +132,16 @@ export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
                   </div>
 
                   <div className="tool-pair__result conv-block conv-block--tool-result">
-                    <div className="conv-block__header">↩ RESULT  {toolName}</div>
-                    <CollapsibleText text={resultText} previewLines={6} emptyLabel="(no output)" />
+                    <div className="conv-block__header">
+                      ↩ RESULT  {toolName}
+                      {resultTokens != null && <span className="conv-block__badge"> · {formatTokens(resultTokens)} tok</span>}
+                    </div>
+                    <CollapsibleText
+                      text={resultText}
+                      previewLines={6}
+                      emptyLabel="(no output)"
+                      expandKey={cardKey ? `${cardKey}:result` : null}
+                    />
                   </div>
                 </>
               )}

@@ -2,22 +2,33 @@
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
 //
-// Tool token enrichment.
+// Token attribution.
 //
-// No agent framework emits per-tool token counts in raw OTEL — tokens live
-// only on LLM-level events (api_request / gen_ai.usage). So we count tool
-// input/output token counts ourselves, after the canonical sessions are
-// built, using `ai-tokenizer` (pure JS, offline, per-model encodings). Each
-// tool's text is counted with the tokenizer of the model that DISPATCHED it
-// (the LLM_CALL preceding the TOOL node in the same scope), so a Claude turn
-// uses Claude's encoding and a GPT/Gemini/Mistral turn uses theirs.
+// Every token in an agent run is reported, exactly, by the LLM API calls — a
+// per-call `output_tokens` (what the model wrote) and `input/cache_*` (what it
+// read). A tool has NO token cost of its own. So instead of inventing tool
+// token counts, we attribute the exact per-call numbers down to the individual
+// content blocks:
 //
-// This runs once per telemetry load (startup + debounced fs.watch reload),
-// not per request — routes serve the already-enriched in-memory sessions.
+//   • A message's exact `output_tokens` is split across its OUTPUT blocks
+//     (THOUGHT / TEXT / TOOL_USE / AGENT_RESPONSE) in proportion to each
+//     block's tokenized size. The split preserves the exact total —
+//     Σ block.tokens === node.outputTokens — using largest-remainder rounding.
+//   • A TOOL_RESULT is not part of the producing call's output; it is READ by
+//     the next message. Its cost is just the tokenized result text.
+//   • A tool's cost is therefore two honest numbers: `callTokens` (its
+//     TOOL_USE block's share of the model's output) and `resultTokens` (its
+//     TOOL_RESULT text read on the next message).
 //
-// Counts are approximate (the library validates >=97% against real API
-// responses for top models); they are decision-support numbers for an
-// operator scanning a run, not billing figures.
+// The proportioning ratio comes from `ai-tokenizer` (pure JS, offline,
+// per-model encodings), counted with the encoding of the model that produced
+// the message — but the per-message TOTAL it is divided into is always the
+// exact API figure, so this is an attribution of real tokens, not a guess.
+//
+// This runs once per telemetry load (startup + debounced fs.watch reload), not
+// per request — routes serve the already-attributed in-memory sessions. It is
+// framework-agnostic: adapters only have to emit blocks + exact LLM_CALL token
+// fields, and any future framework inherits per-block attribution for free.
 
 import { Tokenizer } from 'ai-tokenizer';
 import { models } from 'ai-tokenizer';
@@ -34,9 +45,9 @@ const ENCODING_LOADERS = {
 
 const DEFAULT_ENCODING = 'o200k_base';
 
-// Counting a multi-MB tool dump in full is wasteful — past this many chars we
-// count a prefix and extrapolate linearly. Tool I/O is overwhelmingly small;
-// this only bites pathological dumps and keeps reloads fast.
+// Counting a multi-MB block in full is wasteful — past this many chars we count
+// a prefix and extrapolate linearly. Block text is overwhelmingly small; this
+// only bites pathological dumps and keeps reloads fast.
 const TOKEN_COUNT_CHAR_CAP = 200_000;
 
 // Fallback when we have a byte size but never captured the result text
@@ -114,60 +125,208 @@ async function warmEncodings(modelIds) {
   await Promise.all([...needed].map(getTokenizer));
 }
 
-// Collect every TOOL_RESULT block in a captured-block list, keyed by id, so a
-// TOOL node can find its result text (and we can stamp the block in place).
-function indexResultBlocks(blocks, into) {
-  for (const b of blocks || []) {
-    if (b && b.type === 'TOOL_RESULT' && b.id != null) into.set(b.id, b);
+// ── Block-level attribution ──────────────────────────────────────────────────
+
+const OUTPUT_BLOCK_TYPES = new Set(['THOUGHT', 'TEXT', 'TOOL_USE', 'AGENT_RESPONSE']);
+
+// The text whose tokenized size weights a block's share of the message output.
+function outputBlockWeightText(block) {
+  if (block.type === 'TOOL_USE') {
+    try { return JSON.stringify(block.input ?? {}); } catch { return String(block.input ?? ''); }
   }
+  return typeof block.text === 'string' ? block.text : '';
 }
 
-// Walk a node list (recursing into AGENT-kind children), threading the model
-// of the most recent LLM_CALL as the dispatcher for subsequent TOOL nodes.
-// resultBlockById lets TOOL nodes recover their output text from the step's
-// captured blocks; scopeFallbackModel covers a TOOL that precedes any LLM_CALL.
-async function enrichNodes(nodes, resultBlockById, scopeFallbackModel) {
+// Largest-remainder (Hamilton) apportionment: split the integer `total` into
+// integer parts proportional to `weights`, guaranteeing Σ parts === total.
+function hamilton(weights, total) {
+  const n = weights.length;
+  if (n === 0) return [];
+  if (!(total > 0)) return weights.map(() => 0);
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (!(sum > 0)) {
+    // No measurable size anywhere — distribute evenly, residual to the tail.
+    const base = Math.floor(total / n);
+    const out = weights.map(() => base);
+    let rem = total - base * n;
+    for (let i = n - 1; i >= 0 && rem > 0; i--, rem--) out[i]++;
+    return out;
+  }
+  const exact = weights.map((w) => (total * w) / sum);
+  const out = exact.map((e) => Math.floor(e));
+  let deficit = total - out.reduce((a, b) => a + b, 0);
+  const order = exact
+    .map((e, i) => ({ i, rem: e - Math.floor(e) }))
+    .sort((a, b) => b.rem - a.rem || a.i - b.i);
+  for (let k = 0; k < deficit && k < order.length; k++) out[order[k].i]++;
+  return out;
+}
+
+// Proportion a message's EXACT output_tokens across its output blocks, stamping
+// `block.tokens`. Leaves blocks untouched when there are none (capture off) so
+// the FE can tell "not measured" from "zero".
+async function proportionOutputBlocks(blocks, outputTokens, model) {
+  const outs = (blocks || []).filter((b) => b && OUTPUT_BLOCK_TYPES.has(b.type));
+  if (outs.length === 0) return;
+  if (!(outputTokens > 0)) { for (const b of outs) b.tokens = 0; return; }
+
+  const weights = [];
+  for (const b of outs) {
+    let w = await countTokens(outputBlockWeightText(b), model);
+    // Redacted extended-thinking carries no text but a real output cost — give
+    // it a signature-derived floor so its share isn't absorbed by siblings.
+    if (w === 0 && b.type === 'THOUGHT' && b.redacted) {
+      w = Math.max(1, Math.round((b.signature?.length || 0) / 4));
+    }
+    weights.push(w);
+  }
+  const parts = hamilton(weights, outputTokens);
+  for (let i = 0; i < outs.length; i++) outs[i].tokens = parts[i];
+}
+
+// Tokenize a TOOL_RESULT's text → "result cost" (read by the next message).
+// Falls back to byte size / 4 when the result text wasn't captured.
+async function tokenizeResultBlock(block, model, toolNode) {
+  if (!block) return;
+  const text = typeof block.text === 'string' ? block.text : '';
+  if (text !== '') { block.tokens = await countTokens(text, model); return; }
+  const bytes = toolNode?.toolResultSizeBytes || 0;
+  block.tokens = bytes > 0 ? Math.round(bytes / BYTES_PER_TOKEN) : 0;
+}
+
+// Walk a node tree (recursing into AGENT children), threading the dispatching
+// model. Proportions each LLM_CALL's output blocks and tokenizes any node-side
+// TOOL_RESULT blocks (cli / anthropic inject them into node.blocks; langchain
+// keeps them only on capturedBlocks — handled in reconcile).
+async function attributeNodes(nodes, scopeFallbackModel, toolByUseId) {
   if (!Array.isArray(nodes)) return;
   let currentModel = scopeFallbackModel || '';
-
   for (const node of nodes) {
     if (!node) continue;
     if (node.kind === 'LLM_CALL') {
       if (node.model) currentModel = node.model;
-    } else if (node.kind === 'TOOL') {
-      const model = currentModel || scopeFallbackModel || '';
-      node.toolInputTokens = await countTokens(node.toolInput, model);
-
-      const resultBlock = node.toolUseId != null ? resultBlockById.get(node.toolUseId) : null;
-      const outputText = resultBlock?.text ?? node.toolOutput ?? null;
-      let outTokens;
-      if (outputText != null && outputText !== '') {
-        outTokens = await countTokens(outputText, model);
-      } else {
-        outTokens = node.toolResultSizeBytes > 0
-          ? Math.round(node.toolResultSizeBytes / BYTES_PER_TOKEN)
-          : 0;
+      await proportionOutputBlocks(node.blocks, node.outputTokens, currentModel);
+      for (const b of node.blocks || []) {
+        if (b && b.type === 'TOOL_RESULT') {
+          await tokenizeResultBlock(b, currentModel, b.id != null ? toolByUseId.get(b.id) : null);
+        }
       }
-      node.toolOutputTokens = outTokens;
-      if (resultBlock) resultBlock.outputTokens = outTokens;
     } else if (node.kind === 'AGENT') {
-      // Nested sub-agent: its own LLM_CALL children dispatch its tools. Seed
-      // the recursion with the current model so a sub-agent whose first node
-      // is a TOOL (before its first LLM_CALL) still resolves an encoding.
-      await enrichNodes(node.nodes, resultBlockById, currentModel);
+      await attributeNodes(node.nodes, currentModel, toolByUseId);
     }
   }
 }
 
-// Enrich one step-shaped object ({ nodes, capturedBlocks }). Used for both
-// real AGENT steps and the per-node `agentStepData` sub-steps the workflow
-// graph carries (langchain builds those as SEPARATE node objects via
-// buildScopedAgentStep, so they need their own pass — see NodeDetailView).
-function enrichStepLike(stepLike, fallbackModel) {
-  if (!stepLike || !Array.isArray(stepLike.nodes)) return Promise.resolve();
-  const resultBlockById = new Map();
-  indexResultBlocks(stepLike.capturedBlocks, resultBlockById);
-  return enrichNodes(stepLike.nodes, resultBlockById, fallbackModel);
+// Index every TOOL node by its toolUseId across the whole tree.
+function indexToolNodes(nodes, into) {
+  for (const n of nodes || []) {
+    if (!n) continue;
+    if (n.kind === 'TOOL' && n.toolUseId != null) into.set(n.toolUseId, n);
+    else if (n.kind === 'AGENT') indexToolNodes(n.nodes, into);
+  }
+}
+
+// Collect already-stamped TOOL_USE / TOOL_RESULT block tokens by id from the
+// node tree, so TOOL nodes (at any depth) can read their call/result cost.
+function collectBlockTokensById(nodes, useTokens, resultTokens) {
+  for (const n of nodes || []) {
+    if (!n) continue;
+    if (n.kind === 'LLM_CALL') {
+      for (const b of n.blocks || []) {
+        if (!b || b.tokens == null || b.id == null) continue;
+        if (b.type === 'TOOL_USE') useTokens.set(b.id, b.tokens);
+        else if (b.type === 'TOOL_RESULT') resultTokens.set(b.id, b.tokens);
+      }
+    } else if (n.kind === 'AGENT') {
+      collectBlockTokensById(n.nodes, useTokens, resultTokens);
+    }
+  }
+}
+
+const isTextBlock = (t) => t === 'THOUGHT' || t === 'TEXT' || t === 'AGENT_RESPONSE';
+// TEXT ≡ AGENT_RESPONSE (every adapter rewrites the final TEXT into a new
+// AGENT_RESPONSE object); THOUGHT only matches THOUGHT.
+const textClassMatch = (a, b) => (a === 'THOUGHT') === (b === 'THOUGHT');
+
+// Copy per-block tokens onto the step's flattened capturedBlocks (what the FE
+// conversation view renders). Output text blocks carry no id, so they match the
+// ordered node-side output blocks via a consuming cursor; tool blocks match by
+// id. A capturedBlocks-only TOOL_RESULT (langchain) is tokenized in place.
+async function reconcileCapturedBlocks(stepLike, fallbackModel, useTokens, resultTokens, toolByUseId) {
+  const captured = stepLike.capturedBlocks;
+  if (!Array.isArray(captured)) return 0;
+
+  // Ordered node-side output text blocks (top-level only — capturedBlocks is
+  // the flattened top-level stream; sub-agent blocks render from node.blocks).
+  const textCursor = [];
+  for (const n of stepLike.nodes || []) {
+    if (n?.kind !== 'LLM_CALL') continue;
+    for (const b of n.blocks || []) {
+      if (b && isTextBlock(b.type)) textCursor.push(b);
+    }
+  }
+
+  let ci = 0;
+  let unmatched = 0;
+  for (const cb of captured) {
+    if (!cb) continue;
+    if (cb.type === 'TOOL_USE') {
+      if (cb.id != null && useTokens.has(cb.id)) cb.tokens = useTokens.get(cb.id);
+      else unmatched++;
+    } else if (cb.type === 'TOOL_RESULT') {
+      if (cb.id != null && resultTokens.has(cb.id)) {
+        cb.tokens = resultTokens.get(cb.id);
+      } else {
+        await tokenizeResultBlock(cb, fallbackModel, cb.id != null ? toolByUseId.get(cb.id) : null);
+        if (cb.id != null) resultTokens.set(cb.id, cb.tokens);
+      }
+    } else if (isTextBlock(cb.type)) {
+      while (ci < textCursor.length && !textClassMatch(textCursor[ci].type, cb.type)) ci++;
+      if (ci < textCursor.length) { cb.tokens = textCursor[ci].tokens; ci++; }
+      else unmatched++;
+    }
+  }
+  return unmatched;
+}
+
+// Stamp `callTokens` / `resultTokens` on every TOOL node (any depth). Null when
+// unknown so the FE renders an em dash rather than a misleading 0.
+function stampToolNodes(nodes, useTokens, resultTokens) {
+  for (const n of nodes || []) {
+    if (!n) continue;
+    if (n.kind === 'TOOL') {
+      n.callTokens = n.toolUseId != null && useTokens.has(n.toolUseId)
+        ? useTokens.get(n.toolUseId) : null;
+      n.resultTokens = n.toolUseId != null && resultTokens.has(n.toolUseId)
+        ? resultTokens.get(n.toolUseId) : null;
+    } else if (n.kind === 'AGENT') {
+      stampToolNodes(n.nodes, useTokens, resultTokens);
+    }
+  }
+}
+
+// Attribute tokens for one step-shaped object ({ nodes, capturedBlocks }). Used
+// for both real AGENT steps and the per-node `agentStepData` sub-steps the
+// workflow graph carries (langchain builds those as separate node trees).
+// Returns the count of capturedBlocks that found no node match (for logging).
+async function attributeStepTokens(stepLike, fallbackModel) {
+  if (!stepLike || !Array.isArray(stepLike.nodes)) return 0;
+
+  const toolByUseId = new Map();
+  indexToolNodes(stepLike.nodes, toolByUseId);
+
+  await attributeNodes(stepLike.nodes, fallbackModel, toolByUseId);
+
+  const useTokens = new Map();
+  const resultTokens = new Map();
+  collectBlockTokensById(stepLike.nodes, useTokens, resultTokens);
+
+  const unmatched = await reconcileCapturedBlocks(
+    stepLike, fallbackModel, useTokens, resultTokens, toolByUseId,
+  );
+
+  stampToolNodes(stepLike.nodes, useTokens, resultTokens);
+  return unmatched;
 }
 
 // Every agentStepData hanging off a turn's workflow graph nodes.
@@ -205,8 +364,10 @@ function dominantModel(session) {
 }
 
 /**
- * Stamp `toolInputTokens` / `toolOutputTokens` on every TOOL AgentNode (at any
- * nesting depth) and `outputTokens` on matched TOOL_RESULT blocks. Mutates the
+ * Attribute the exact per-LLM-call tokens down to individual content blocks and
+ * tool nodes: stamps `tokens` on every output/result Block, and `callTokens` /
+ * `resultTokens` on every TOOL AgentNode (at any nesting depth), reconciling
+ * the per-node blocks with the step's flattened capturedBlocks. Mutates the
  * sessions in place and returns them. Async because encodings are imported on
  * demand.
  */
@@ -232,20 +393,22 @@ export async function enrichToolTokens(sessions) {
   }
   await warmEncodings(modelIds);
 
+  let unmatched = 0;
   for (const session of sessions) {
     const fallbackModel = dominantModel(session);
     for (const turn of session.turns || []) {
       for (const step of turn.steps || []) {
-        if (step.type === 'AGENT') await enrichStepLike(step, fallbackModel);
+        if (step.type === 'AGENT') unmatched += await attributeStepTokens(step, fallbackModel);
       }
       // The workflow graph's per-node agentStepData are separate node trees
-      // (langchain) — NodeDetailView renders them, so they need stamping too.
-      for (const asd of workflowAgentSteps(turn)) await enrichStepLike(asd, fallbackModel);
+      // (langchain) — NodeDetailView renders them, so they need attribution too.
+      for (const asd of workflowAgentSteps(turn)) unmatched += await attributeStepTokens(asd, fallbackModel);
     }
   }
 
   if (loadedEncodings.size > 0) {
-    console.log(`[agentObserve] tool token encodings loaded: ${[...loadedEncodings].join(', ')}`);
+    const note = unmatched > 0 ? ` (${unmatched} captured blocks unmatched)` : '';
+    console.log(`[agentObserve] token attribution encodings loaded: ${[...loadedEncodings].join(', ')}${note}`);
   }
   return sessions;
 }

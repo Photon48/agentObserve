@@ -13,7 +13,28 @@ import {
   collectToolCallsFromAgentNodes,
   stampParallelGroup,
   normalizeAnthropicContentBlock,
+  cachePct,
+  stampAgentTokens,
+  stampAgentAggregates,
 } from './shared.js';
+
+// LangChain/LangGraph carry cache-token breakdown on the LLM span's
+// `langsmith.metadata.usage_metadata` attribute (a JSON string). The OTEL
+// `gen_ai.usage.*` attributes only expose input/output/total — never cache.
+// Returns fresh cache_read / cache_creation counts (0 when absent or caching
+// was inactive).
+function readUsageCache(span) {
+  try {
+    const raw = getAttr(span.attributes, 'langsmith.metadata.usage_metadata');
+    const d = raw ? JSON.parse(raw).input_token_details : null;
+    return {
+      cacheRead: Number(d?.cache_read || 0),
+      cacheCreation: Number(d?.cache_creation || 0),
+    };
+  } catch {
+    return { cacheRead: 0, cacheCreation: 0 };
+  }
+}
 
 export const FRAMEWORK = 'langchain';
 
@@ -562,11 +583,17 @@ export function buildSession(sessionId, raw) {
   let totalCost = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
   for (const turn of turns) {
     totalCost += turn.totalCost;
     totalInputTokens += turn.totalInputTokens;
     totalOutputTokens += turn.totalOutputTokens;
+    totalCacheReadTokens += turn.totalCacheReadTokens || 0;
+    totalCacheCreationTokens += turn.totalCacheCreationTokens || 0;
   }
+  const totalContextInputTokens =
+    totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens;
 
   const session = {
     id: sessionId,
@@ -577,6 +604,10 @@ export function buildSession(sessionId, raw) {
     totalCost,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreationTokens,
+    totalContextInputTokens,
+    cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
     systemPrompt,
     availableTools,
     turns,
@@ -655,10 +686,15 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
   // Token totals from all LLM spans
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
   const llmSpans = descendants.filter((s) => getAttr(s.attributes, 'langsmith.span.kind') === 'llm');
   for (const s of llmSpans) {
     totalInputTokens += Number(getAttr(s.attributes, 'gen_ai.usage.input_tokens') || 0);
     totalOutputTokens += Number(getAttr(s.attributes, 'gen_ai.usage.output_tokens') || 0);
+    const c = readUsageCache(s);
+    totalCacheReadTokens += c.cacheRead;
+    totalCacheCreationTokens += c.cacheCreation;
   }
 
   // ── Agent nodes: LLM + tool spans in chronological order ──────────────────
@@ -700,14 +736,15 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
       const model = getAttr(span.attributes, 'gen_ai.request.model') || '';
       const inTok = Number(getAttr(span.attributes, 'gen_ai.usage.input_tokens') || 0);
       const outTok = Number(getAttr(span.attributes, 'gen_ai.usage.output_tokens') || 0);
+      const cache = readUsageCache(span);
       const graphNode = getAttr(span.attributes, 'langsmith.metadata.langgraph_node') || '';
       agentNodes.push({
         kind: 'LLM_CALL',
         model,
         inputTokens: inTok,
         outputTokens: outTok,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
+        cacheReadTokens: cache.cacheRead,
+        cacheCreationTokens: cache.cacheCreation,
         costUsd: 0,
         durationMs: spanDur,
         ttftMs: 0,
@@ -752,11 +789,28 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
   const turnHelperSpans = helperSpansInWindow(BigInt(startNano), BigInt(endNano));
   const stepAvailableTools = collectScopeToolsFromSpans(descendants, turnHelperSpans);
 
+  // Stamp recursive token rollups on any nested AGENT-kind node, plus the
+  // top-level AGENT step (sum of its own LLM calls). buildTurn currently
+  // flattens sub-graphs, so this mostly stamps the step itself today.
+  stampAgentAggregates(agentNodes);
+  const agentStep = { type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts, availableTools: stepAvailableTools };
+  stampAgentTokens(agentStep);
+
   // ── Steps ─────────────────────────────────────────────────────────────────
   const steps = [
     { type: 'PROMPT', text: userPrompt },
-    { type: 'AGENT', nodes: agentNodes, capturedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts, availableTools: stepAvailableTools },
-    { type: 'FINAL', totalCost: 0, totalInputTokens, totalOutputTokens, durationMs },
+    agentStep,
+    {
+      type: 'FINAL',
+      totalCost: 0,
+      totalInputTokens,
+      totalOutputTokens,
+      totalCacheReadTokens,
+      totalCacheCreationTokens,
+      totalContextInputTokens: totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens,
+      cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
+      durationMs,
+    },
   ];
 
   // ── Scoped agent step builder (for AGENT workflow nodes) ─────────────────
@@ -837,14 +891,15 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
         const model = getAttr(span.attributes, 'gen_ai.request.model') || '';
         const inTok = Number(getAttr(span.attributes, 'gen_ai.usage.input_tokens') || 0);
         const outTok = Number(getAttr(span.attributes, 'gen_ai.usage.output_tokens') || 0);
+        const cache = readUsageCache(span);
         const graphNode = getAttr(span.attributes, 'langsmith.metadata.langgraph_node') || '';
         scopedNodes.push({
           kind: 'LLM_CALL',
           model,
           inputTokens: inTok,
           outputTokens: outTok,
-          cacheReadTokens: 0,
-          cacheCreationTokens: 0,
+          cacheReadTokens: cache.cacheRead,
+          cacheCreationTokens: cache.cacheCreation,
           costUsd: 0,
           durationMs: spanDur,
           ttftMs: 0,
@@ -873,7 +928,10 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
     const scopedToolCallCounts = collectToolCallsFromAgentNodes(scopedNodes);
     const scopedHelperSpans = helperSpansInWindow(BigInt(childSpan.startTimeUnixNano), BigInt(childSpan.endTimeUnixNano));
     const scopedAvailableTools = collectScopeToolsFromSpans(scopedDescendants, scopedHelperSpans);
-    return { type: 'AGENT', nodes: scopedNodes, capturedBlocks: scopedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts: scopedToolCallCounts, availableTools: scopedAvailableTools };
+    stampAgentAggregates(scopedNodes);
+    const scopedStep = { type: 'AGENT', nodes: scopedNodes, capturedBlocks: scopedBlocks, upstreamPre: [], upstreamPost: [], userPrompt, toolCallCounts: scopedToolCallCounts, availableTools: scopedAvailableTools };
+    stampAgentTokens(scopedStep);
+    return scopedStep;
   }
 
   // ── Workflow graph ────────────────────────────────────────────────────────
@@ -960,6 +1018,10 @@ function buildTurn(idx, rootSpan, childrenOf, spanById, mergeTool = () => null, 
     totalCost: 0,
     totalInputTokens,
     totalOutputTokens,
+    totalCacheReadTokens,
+    totalCacheCreationTokens,
+    totalContextInputTokens: totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens,
+    cachePct: cachePct(totalInputTokens, totalCacheReadTokens, totalCacheCreationTokens),
     steps,
     workflowGraph: { hasPipeline: true, groups },
     availableTools: stepAvailableTools,

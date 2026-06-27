@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
-import { useRef, useState } from 'react';
+import { useRef } from 'react';
+import { usePersistentToggle } from './ExpansionContext.jsx';
 
 // Long-form preview with click-to-toggle. The whole body is the toggle
 // target so a user reading a 500-line dump doesn't have to scroll back to
@@ -63,8 +64,13 @@ export function CollapsibleText({
   previewLines = 6,
   emptyLabel = '(empty)',
   onToggle,
+  // Stable id for this block's expand state. When provided (and an
+  // ExpansionContext is present) the expanded/collapsed state persists across
+  // unmount/remount — carousel sibling swaps, MessageCall body collapse. Null
+  // (the default) falls back to local-only state.
+  expandKey = null,
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = usePersistentToggle(expandKey, false);
   const bodyRef = useRef(null);
   const { rows: totalRows, wrapped } = countVisualRows(text);
   const needsCollapse = totalRows > previewLines;
