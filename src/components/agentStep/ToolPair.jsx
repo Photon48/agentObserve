@@ -5,6 +5,7 @@ import { useRef, useState } from 'react';
 import { CollapsibleText } from './CollapsibleText.jsx';
 import { StatusChip } from './StatusChip.jsx';
 import { useToolOccurrence } from './ToolNavContext.jsx';
+import { usePersistentToggle } from './ExpansionContext.jsx';
 import { formatDuration, formatTokens } from '../../utils/format.js';
 import { formatToolInput, prettifyMaybeJson } from '../../utils/prettyJson.js';
 
@@ -17,9 +18,15 @@ import { formatToolInput, prettifyMaybeJson } from '../../utils/prettyJson.js';
 // the cascade stays uniform; the result side is marked missing.
 
 export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
-  const [open, setOpen] = useState(false);
-  // Once opened, keep the detail mounted so CollapsibleText state survives a
-  // collapse and the close transition has something to animate.
+  // Persist the card's open state (and each inner block's expanded state, via
+  // the keys below) keyed on the stable toolUseId so it survives carousel
+  // sibling swaps and MessageCall body collapse/re-expand. Falls back to local
+  // state when there's no toolUseId or no ExpansionContext.
+  const cardKey = useBlock?.id ? `tool:${useBlock.id}` : null;
+  const [open, setOpen] = usePersistentToggle(cardKey, false);
+  // Once opened, keep the detail mounted so the close transition has something
+  // to animate. Local-only is fine: when `open` is restored true on remount the
+  // detail renders regardless of this flag.
   const [hasOpened, setHasOpened] = useState(false);
 
   const inputText = formatToolInput(useBlock?.input);
@@ -106,7 +113,11 @@ export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
                   {toolUseId && <span className="tool-pair__id" title={toolUseId}>{shortId(toolUseId)}</span>}
                   {callTokens != null && <span className="conv-block__badge"> · {formatTokens(callTokens)} tok</span>}
                 </div>
-                <CollapsibleText text={inputText} previewLines={8} />
+                <CollapsibleText
+                  text={inputText}
+                  previewLines={8}
+                  expandKey={cardKey ? `${cardKey}:input` : null}
+                />
               </div>
 
               {orphan ? (
@@ -125,7 +136,12 @@ export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
                       ↩ RESULT  {toolName}
                       {resultTokens != null && <span className="conv-block__badge"> · {formatTokens(resultTokens)} tok</span>}
                     </div>
-                    <CollapsibleText text={resultText} previewLines={6} emptyLabel="(no output)" />
+                    <CollapsibleText
+                      text={resultText}
+                      previewLines={6}
+                      emptyLabel="(no output)"
+                      expandKey={cardKey ? `${cardKey}:result` : null}
+                    />
                   </div>
                 </>
               )}

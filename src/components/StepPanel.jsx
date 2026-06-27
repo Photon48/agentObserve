@@ -10,6 +10,7 @@ import { ParallelCarousel } from './agentStep/ParallelCarousel.jsx';
 import { buildRenderUnits, buildRenderUnitsFromNodes } from './agentStep/renderUnits.js';
 import { groupRenderUnits, callStats, callDurations, callManifest, callPreview } from './agentStep/callGroups.js';
 import { MessageCall } from './agentStep/MessageCall.jsx';
+import { ExpansionContext } from './agentStep/ExpansionContext.jsx';
 import { prettifyMaybeJson } from '../utils/prettyJson.js';
 
 function PromptStep({ step }) {
@@ -23,7 +24,7 @@ function PromptStep({ step }) {
 
 // ── Conversation blocks ──────────────────────────────────────────────────────
 
-function ThoughtBlock({ block }) {
+function ThoughtBlock({ block, idKey }) {
   // Anthropic's extended-thinking is privacy-redacted upstream — the model
   // emitted reasoning but content is withheld. Show a labeled badge instead
   // of an "(empty)" CollapsibleText so the operator understands what's going
@@ -48,12 +49,12 @@ function ThoughtBlock({ block }) {
         ◈ THINKING
         {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
       </div>
-      <CollapsibleText text={block.text} previewLines={8} />
+      <CollapsibleText text={block.text} previewLines={8} expandKey={idKey} />
     </div>
   );
 }
 
-function TextBlock({ block, model }) {
+function TextBlock({ block, model, idKey }) {
   const label = model || 'ASSISTANT';
   return (
     <div className="conv-block conv-block--text">
@@ -61,7 +62,7 @@ function TextBlock({ block, model }) {
         ◆ {label}
         {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
       </div>
-      <CollapsibleText text={block.text} previewLines={10} />
+      <CollapsibleText text={block.text} previewLines={10} expandKey={idKey} />
     </div>
   );
 }
@@ -96,35 +97,35 @@ function LLMTimingRow({ node }) {
   );
 }
 
-function AgentResponseBlock({ block }) {
+function AgentResponseBlock({ block, idKey }) {
   return (
     <div className="conv-block conv-block--agent-response">
       <div className="conv-block__header">
         ★ RESPONSE
         {block.tokens != null && <span className="conv-block__badge"> · {formatTokens(block.tokens)} tok</span>}
       </div>
-      <CollapsibleText text={block.text} previewLines={10} />
+      <CollapsibleText text={block.text} previewLines={10} expandKey={idKey} />
     </div>
   );
 }
 
-function TextUnitBlock({ block, model }) {
+function TextUnitBlock({ block, model, idKey }) {
   switch (block.type) {
-    case 'THOUGHT':        return <ThoughtBlock block={block} />;
-    case 'TEXT':           return <TextBlock block={block} model={model} />;
-    case 'AGENT_RESPONSE': return <AgentResponseBlock block={block} />;
+    case 'THOUGHT':        return <ThoughtBlock block={block} idKey={idKey} />;
+    case 'TEXT':           return <TextBlock block={block} model={model} idKey={idKey} />;
+    case 'AGENT_RESPONSE': return <AgentResponseBlock block={block} idKey={idKey} />;
     default: return null;
   }
 }
 
-function OrphanToolResultBlock({ block }) {
+function OrphanToolResultBlock({ block, idKey }) {
   return (
     <div className="conv-block conv-block--tool-result conv-block--orphan">
       <div className="conv-block__header">
         ↩ RESULT  {block?.name}
         <span className="conv-block__orphan-tag" title="no matching tool_use">(unmatched)</span>
       </div>
-      <CollapsibleText text={prettifyMaybeJson(block?.text || '')} previewLines={6} />
+      <CollapsibleText text={prettifyMaybeJson(block?.text || '')} previewLines={6} expandKey={idKey} />
     </div>
   );
 }
@@ -134,7 +135,7 @@ function renderUnit(u, onZoomIntoSubAgent) {
     case 'llm-timing':
       return <LLMTimingRow key={u.key} node={u.node} />;
     case 'text':
-      return <TextUnitBlock key={u.key} block={u.block} model={u.model} />;
+      return <TextUnitBlock key={u.key} block={u.block} model={u.model} idKey={u.key} />;
     case 'tool-pair':
       return (
         <ToolPair
@@ -173,7 +174,7 @@ function renderUnit(u, onZoomIntoSubAgent) {
         />
       );
     case 'orphan-tool-result':
-      return <OrphanToolResultBlock key={u.key} block={u.block} />;
+      return <OrphanToolResultBlock key={u.key} block={u.block} idKey={u.key} />;
     case 'cascade-llm':
       return <LLMNode key={u.key} node={u.node} />;
     case 'cascade-hook':
@@ -432,6 +433,18 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
   const upstreamPre  = step.upstreamPre  || [];
   const upstreamPost = step.upstreamPost || [];
 
+  // One expand/collapse store per AGENT step. Holds every card/text block's
+  // expanded state keyed by stable id so it survives carousel sibling swaps and
+  // MessageCall body collapse. Reset when the step changes so state never leaks
+  // across steps (mirrors AgentConversation's openSet reset).
+  const expansionStore = useRef(null);
+  if (expansionStore.current === null) expansionStore.current = new Map();
+  const stepRef = useRef(step);
+  if (stepRef.current !== step) {
+    stepRef.current = step;
+    expansionStore.current = new Map();
+  }
+
   // Cross-reference indices used by buildRenderUnits to pair TOOL_USE
   // blocks with their TOOL agentNode (for status / parallelGroup) and to
   // splice promoted AGENT-kind sub-agents in at their spawning toolUseId.
@@ -528,6 +541,7 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
   })();
 
   return (
+    <ExpansionContext.Provider value={expansionStore.current}>
     <div className="agent-step-wrap">
       {step.aggTotalInputTokens > 0 && (
         <div className="agent-token-rollup">
@@ -550,6 +564,7 @@ export function AgentStep({ step, onZoomIntoSubAgent }) {
       {agentContent}
       <UpstreamSection nodes={upstreamPost} position="post" />
     </div>
+    </ExpansionContext.Provider>
   );
 }
 
