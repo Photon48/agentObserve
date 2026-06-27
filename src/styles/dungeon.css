@@ -2152,8 +2152,18 @@ button.tool-schema__row-top {
    (.tool-pair, .parallel-carousel, or orphan conv-block). Phosphor ring +
    halo, opacity-only fade (compositor-friendly), removed by JS ~1.6s. */
 .conv-block--orphan,
-.parallel-carousel {
+.parallel-carousel,
+.msg-call {
   position: relative;
+}
+
+/* The ring is an outset ::after; .tool-card and .msg-call clip with
+   overflow:hidden, so un-clip them only while the flash is active. The
+   collapsed tool detail stays clipped by .tool-card__detail-inner, so no hidden
+   content leaks during the ~1.6s flash. */
+.tool-card.tool-nav-flash,
+.msg-call.tool-nav-flash {
+  overflow: visible;
 }
 
 .tool-nav-flash::after {

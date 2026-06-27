@@ -36,6 +36,7 @@ export function ParallelCarousel({ members, siblings, onZoomIntoSubAgent }) {
       m?.type === 'tool-pair'
         ? toolNav.register({
             toolName: m.toolNode?.toolName || m.useBlock?.name || 'tool',
+            occurrenceId: m.useBlock?.id || m.toolNode?.toolUseId,
             getEl: () => rootRef.current,
             reveal: () => goRef.current(i),
             memberIdx: i,

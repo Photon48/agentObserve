@@ -162,3 +162,24 @@ export function callManifest(group) {
   return { hasThought, hasText, tools: [...tools.values()] };
 }
 
+// Ordered list of the tool call sites this group contains — one entry per
+// invocation (parallel members flattened, sub-agents excluded, matching the
+// carousel's tool-nav registration and the sidebar's tool counts). Feeds
+// MessageCall's always-present block-fallback tool-nav registration so the
+// sidebar can cycle through collapsed call sites too.
+export function callToolOccurrences(group) {
+  const out = [];
+  const push = (atom) => {
+    const id = atom.useBlock?.id || atom.toolNode?.toolUseId || '';
+    const name = atom.toolNode?.toolName || atom.useBlock?.name || 'tool';
+    out.push({ id, name });
+  };
+  for (const u of group?.units || []) {
+    if (u.type === 'tool-pair' || u.type === 'orphan-tool-use') push(u);
+    else if (u.type === 'parallel') {
+      for (const m of u.members || []) if (m?.type === 'tool-pair') push(m);
+    }
+  }
+  return out;
+}
+

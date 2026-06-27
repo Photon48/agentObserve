@@ -74,43 +74,86 @@ export function ToolNavProvider({ children }) {
       if (!toolName) return null;
       // Only elements inside the TOP stacked panel are valid targets —
       // lower zoom layers stay mounted underneath.
-      const visible = [];
+      const inTop = (el) => !!(el && el.closest('.stacked-panel--top'));
+
+      // Two kinds of entry contribute. Block-fallback entries are registered by
+      // MessageCall and are ALWAYS present (one per tool call site, whether the
+      // LLM call is expanded or collapsed) — they define the complete, ordered
+      // occurrence list. Precise entries (ToolPair / carousel members) exist
+      // only while their call is expanded and pinpoint the exact tool card to
+      // scroll/pulse.
+      const blocks = []; // { entry, el } — block-fallback, complete set
+      const precise = new Map(); // occurrenceId → { entry, el }
+      const loosePrecise = []; // precise entries without an occurrenceId
       for (const entry of registry.values()) {
         if (entry.toolName !== toolName) continue;
         const el = entry.getEl?.();
-        if (!el || !el.closest('.stacked-panel--top')) continue;
-        visible.push({ entry, el });
+        if (!inTop(el)) continue;
+        if (entry.blockFallback) blocks.push({ entry, el });
+        else if (entry.occurrenceId) precise.set(entry.occurrenceId, { entry, el });
+        else loosePrecise.push({ entry, el });
       }
-      if (visible.length === 0) return null;
 
-      visible.sort((a, b) => {
-        if (a.el === b.el) return (a.entry.memberIdx || 0) - (b.entry.memberIdx || 0);
-        return a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      // An occurrence resolves to a TOOL-mode target (precise card, with its
+      // reveal) when its call is open and the precise entry is mounted, else a
+      // BLOCK-mode target (the .msg-call section, no reveal — we pulse the
+      // collapsed LLM block rather than expanding it). `order`/`memberIdx` drive
+      // a stable document-order sort; `key` is the cycle-stable identity.
+      let occ;
+      if (blocks.length) {
+        occ = blocks.map(({ entry, el }) => {
+          const open = entry.isOpen ? entry.isOpen() : true;
+          const p = entry.occurrenceId ? precise.get(entry.occurrenceId) : null;
+          const tool = open && p;
+          return {
+            target: tool ? p : { entry, el },
+            order: el,
+            memberIdx: entry.memberIdx || 0,
+            key: entry.occurrenceId || entry.id,
+          };
+        });
+      } else {
+        // No block entries (e.g. the always-open lead group) — fall back to the
+        // mounted precise entries directly.
+        occ = [...precise.values(), ...loosePrecise].map(({ entry, el }) => ({
+          target: { entry, el },
+          order: el,
+          memberIdx: entry.memberIdx || 0,
+          key: entry.occurrenceId || entry.id,
+        }));
+      }
+      if (occ.length === 0) return null;
+
+      occ.sort((a, b) => {
+        if (a.order === b.order) return a.memberIdx - b.memberIdx;
+        return a.order.compareDocumentPosition(b.order) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
       });
 
-      const signature = visible.map((v) => v.entry.id).join(',');
+      // Signature keyed on occurrence identity (not open/closed mode) so the
+      // cycle position survives expanding/collapsing a call mid-sequence.
+      const signature = occ.map((o) => o.key).join(',');
       const cycle = cycleRef.current;
       const target =
         cycle.toolName === toolName && cycle.signature === signature
-          ? (cycle.idx + 1) % visible.length
+          ? (cycle.idx + 1) % occ.length
           : 0;
       cycleRef.current = { toolName, signature, idx: target };
 
-      const { entry, el } = visible[target];
-      entry.reveal?.();
+      const { target: chosen } = occ[target];
+      chosen.entry.reveal?.();
       // Two frames: a carousel reveal remounts its member (key={idx}) and
       // runs its own rAF-deferred height measurement before layout settles.
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          el.scrollIntoView({
+          chosen.el.scrollIntoView({
             behavior: prefersReducedMotion() ? 'auto' : 'smooth',
             block: 'center',
           });
-          flash(el);
+          flash(chosen.el);
         });
       });
 
-      return { idx: target + 1, total: visible.length };
+      return { idx: target + 1, total: occ.length };
     };
 
     valueRef.current = { register, navigate };
@@ -130,14 +173,15 @@ export function useToolNav() {
 // Registers one mounted occurrence of `toolName` anchored at `elRef`.
 // Inert under NOOP_NAV (e.g. inside a ParallelCarousel frame, where the
 // carousel registers its members itself).
-export function useToolOccurrence(toolName, elRef, { disabled = false } = {}) {
+export function useToolOccurrence(toolName, elRef, { disabled = false, occurrenceId } = {}) {
   const nav = useContext(ToolNavContext);
   useEffect(() => {
     if (disabled || !toolName || nav === NOOP_NAV) return undefined;
     return nav.register({
       toolName,
+      occurrenceId,
       getEl: () => elRef.current,
       memberIdx: 0,
     });
-  }, [nav, toolName, disabled, elRef]);
+  }, [nav, toolName, disabled, occurrenceId, elRef]);
 }

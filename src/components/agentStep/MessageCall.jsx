@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Rishu Goyal. All rights reserved.
 // Licensed under the Business Source License 1.1.
 // See LICENSE in the project root for license terms.
+import { useEffect, useRef } from 'react';
 import { formatTokens, formatDuration, formatPct } from '../../utils/format.js';
+import { useToolNav, NOOP_NAV } from './ToolNavContext.jsx';
 
 // One LLM call rendered as a single collapsible block. The collapsed header is
 // three stacked zones, all controlled by the parent so expand-all works:
@@ -37,7 +39,31 @@ function ToolPill({ name, count, isAgent }) {
   );
 }
 
-export function MessageCall({ stats, durations, manifest, preview, open, onToggle, children }) {
+export function MessageCall({ stats, durations, manifest, preview, occurrences, open, onToggle, children }) {
+  // Sidebar tool navigation: register an always-present block-fallback entry per
+  // tool call site this LLM call contains, regardless of whether the call is
+  // expanded (its body — and therefore the precise ToolPair occurrences — only
+  // mounts when open). navigate() uses these to cycle through every site and,
+  // when the call is collapsed, pulses this whole .msg-call block.
+  const nav = useToolNav();
+  const sectionRef = useRef(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+  useEffect(() => {
+    if (nav === NOOP_NAV || !occurrences?.length) return undefined;
+    const unregisters = occurrences.map((o, i) =>
+      nav.register({
+        toolName: o.name,
+        occurrenceId: o.id,
+        blockFallback: true,
+        memberIdx: i,
+        getEl: () => sectionRef.current,
+        isOpen: () => openRef.current,
+      }),
+    );
+    return () => unregisters.forEach((un) => un());
+  }, [nav, occurrences]);
+
   // Leading header-less group (orphan units before any call): render the body
   // bare so nothing is dropped, but without the call chrome.
   if (!stats) {
@@ -58,6 +84,7 @@ export function MessageCall({ stats, durations, manifest, preview, open, onToggl
 
   return (
     <section
+      ref={sectionRef}
       className={`msg-call${open ? ' msg-call--open' : ''}`}
       data-call-index={callIndex}
       aria-label={`LLM call ${callIndex + 1}${model ? `, ${model}` : ''}`}

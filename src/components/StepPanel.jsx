@@ -8,7 +8,7 @@ import { ToolPair } from './agentStep/ToolPair.jsx';
 import { SubAgentPair } from './agentStep/SubAgentPair.jsx';
 import { ParallelCarousel } from './agentStep/ParallelCarousel.jsx';
 import { buildRenderUnits, buildRenderUnitsFromNodes } from './agentStep/renderUnits.js';
-import { groupRenderUnits, callStats, callDurations, callManifest, callPreview } from './agentStep/callGroups.js';
+import { groupRenderUnits, callStats, callDurations, callManifest, callPreview, callToolOccurrences } from './agentStep/callGroups.js';
 import { MessageCall } from './agentStep/MessageCall.jsx';
 import { ExpansionContext } from './agentStep/ExpansionContext.jsx';
 import { prettifyMaybeJson } from '../utils/prettyJson.js';
@@ -202,6 +202,14 @@ function AgentConversation({ units, onZoomIntoSubAgent }) {
     () => groups.reduce((sum, g) => (g.llm ? sum + callDurations(g).totalMs : sum), 0),
     [groups],
   );
+  // Tool call sites per LLM call, memoized so MessageCall's block-fallback
+  // tool-nav registration (keyed on this array's identity) doesn't churn.
+  const occurrencesByKey = useMemo(() => {
+    const m = new Map();
+    for (const g of groups) if (g.llm) m.set(g.key, callToolOccurrences(g));
+    return m;
+  }, [groups]);
+
   // Collapsed by default — start with an empty open set.
   const [openSet, setOpenSet] = useState(() => new Set());
 
@@ -249,6 +257,7 @@ function AgentConversation({ units, onZoomIntoSubAgent }) {
             durations={g.llm ? callDurations(g) : null}
             manifest={g.llm ? callManifest(g) : null}
             preview={g.llm ? callPreview(g) : null}
+            occurrences={g.llm ? occurrencesByKey.get(g.key) : null}
             open={g.llm ? openSet.has(g.callIndex) : true}
             onToggle={g.llm ? () => toggle(g.callIndex) : undefined}
           >
