@@ -68,6 +68,20 @@ def _resolve_session(proto_msg) -> str:
                     return v
             break
 
+    # 3. Metrics carry session.id on each data point, not the metric record or
+    # the resource (Claude Code / Anthropic SDK cost+usage metrics). Descend
+    # into the first data point of the first metric that has one.
+    for scope_metrics in getattr(first, "scope_metrics", []):
+        for metric in getattr(scope_metrics, "metrics", []):
+            shape = metric.WhichOneof("data")
+            if not shape:
+                continue
+            data_points = getattr(getattr(metric, shape), "data_points", None)
+            if data_points:
+                v = _find_attr(data_points[0].attributes, "session.id")
+                if v:
+                    return v
+
     return "unknown"
 
 
