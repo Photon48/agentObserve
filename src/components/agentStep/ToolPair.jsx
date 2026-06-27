@@ -48,7 +48,7 @@ export function ToolPair({ useBlock, resultBlock, toolNode, orphan = false }) {
   const resultTokens = resultBlock?.tokens ?? toolNode?.resultTokens ?? null;
 
   const rootRef = useRef(null);
-  useToolOccurrence(toolName, rootRef);
+  useToolOccurrence(toolName, rootRef, { occurrenceId: toolUseId || undefined });
 
   const toggle = () => {
     setOpen((o) => !o);
