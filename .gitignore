@@ -19,3 +19,8 @@ telemetry/
 
 # Environment
 .env
+
+# Local scratch / screenshots (Playwright MCP, ad-hoc captures in repo root)
+.playwright-mcp/
+/*.png
+/nav.yml
