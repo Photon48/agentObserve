@@ -9,6 +9,46 @@ The release-notes section of each version is the source of truth for the
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-29
+
+### Added
+- **See where your tokens actually go.** Every agent run now shows exact
+  token usage broken down to the individual message and content block —
+  thinking, text, tool calls, and final replies each carry their own
+  count, summing precisely to the model's reported total. You can finally
+  answer "what cost me the most in this turn?" at a glance.
+- **Per-tool token cost.** Each tool call shows roughly how many tokens
+  the model spent *writing* the call and how many it read back from the
+  result, so expensive tools (large file reads, verbose search results)
+  are easy to spot. Counts show an em dash rather than a misleading `0`
+  when the underlying content wasn't captured.
+- **Token-weighted timeline.** The per-turn timeline bar now sizes each
+  step by its token volume, not just its duration — a fast but
+  token-heavy step is no longer visually hidden behind a slow, cheap one.
+- **Collapsible message blocks.** Long messages within an LLM call collapse
+  by default and expand on click, so a turn with large prompts or outputs
+  stays scannable. Your expand/collapse choices now persist as you move
+  around the agent view instead of resetting each time.
+- **Tool sidebar jumps to every call site.** Clicking a tool in the
+  sidebar now cycles through *all* of its call sites in the cascade — not
+  just the first — with a position readout (e.g. `2/5`) so you can walk
+  every place a tool was used.
+
+### Fixed
+- **Sessions no longer scatter into "unknown."** Runs whose telemetry
+  arrives as cost/usage metrics (Claude Code and the Anthropic SDK) are
+  now grouped under the correct session instead of landing in an
+  `unknown` bucket, so a single agent run shows up as one session.
+
+### Upgrade notes
+- This release is fully backward-compatible — **no changes to the
+  instrumentation you install in your agent project** and no new
+  environment variables. Just pull the latest server, reinstall server
+  dependencies, and restart the stack.
+- Docker users: `docker compose pull && docker compose up -d`.
+- From-source users: after pulling, run `npm install` (a new dependency
+  was added for token counting) and restart the services.
+
 ## [1.1.0] - 2026-06-11
 
 ### Added
